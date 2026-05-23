@@ -1,0 +1,122 @@
+# Reusable workflow: post a failure alert to Slack.
+# Called by other workflows when a job fails.
+#
+# Routing:
+#   - main branch failure  → SLACK_WEBHOOK_CRITICAL
+#   - PR / other failure   → SLACK_WEBHOOK_WARNING
+
+name: Slack Alert
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        description: "Name of the failing job"
+        required: true
+        type: string
+      workflow_name:
+        description: "Name of the calling workflow"
+        required: true
+        type: string
+      severity:
+        description: "Severity override: critical | warning | info"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SLACK_WEBHOOK_CRITICAL:
+        required: true
+      SLACK_WEBHOOK_WARNING:
+        required: true
+      SLACK_WEBHOOK_INFO:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve severity
+        id: severity
+        run: |
+          if [[ -n "${{ inputs.severity }}" ]]; then
+            echo "level=${{ inputs.severity }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "level=critical" >> $GITHUB_OUTPUT
+          else
+            echo "level=warning" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pick webhook
+        id: webhook
+        env:
+          CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
+          WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}
+          INFO: ${{ secrets.SLACK_WEBHOOK_INFO }}
+        run: |
+          case "${{ steps.severity.outputs.level }}" in
+            critical) echo "url=$CRITICAL" >> $GITHUB_OUTPUT ;;
+            warning)  echo "url=$WARNING"  >> $GITHUB_OUTPUT ;;
+            info)     echo "url=$INFO"     >> $GITHUB_OUTPUT ;;
+            *)        echo "url=$WARNING"  >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Post to Slack
+        env:
+          WEBHOOK: ${{ steps.webhook.outputs.url }}
+          LEVEL: ${{ steps.severity.outputs.level }}
+        run: |
+          ICON_MAP_critical=":rotating_light:"
+          ICON_MAP_warning=":warning:"
+          ICON_MAP_info=":information_source:"
+          ICON_VAR="ICON_MAP_${LEVEL}"
+          ICON="${!ICON_VAR}"
+
+          COLOR_MAP_critical="#dc2626"
+          COLOR_MAP_warning="#f59e0b"
+          COLOR_MAP_info="#3b82f6"
+          COLOR_VAR="COLOR_MAP_${LEVEL}"
+          COLOR="${!COLOR_VAR}"
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          PAYLOAD=$(cat <<JSON
+          {
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${ICON} ${{ inputs.workflow_name }} failed"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      { "type": "mrkdwn", "text": "*Repo*\n${{ github.repository }}" },
+                      { "type": "mrkdwn", "text": "*Branch*\n${{ github.ref_name }}" },
+                      { "type": "mrkdwn", "text": "*Job*\n${{ inputs.job_name }}" },
+                      { "type": "mrkdwn", "text": "*Actor*\n${{ github.actor }}" }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "View run" },
+                        "url": "${RUN_URL}"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          JSON
+          )
+
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "${PAYLOAD}" "${WEBHOOK}"

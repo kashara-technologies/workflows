@@ -1,0 +1,85 @@
+# Reusable workflow: Next.js CI pipeline.
+# Steps: install → typecheck → build.
+# Lint is run only if a lint script exists (no fail if absent).
+#
+# Calling workflows pass node/pnpm versions if they need to override defaults.
+
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version"
+        required: false
+        type: string
+        default: "22"
+      pnpm_version:
+        description: "pnpm version"
+        required: false
+        type: string
+        default: "11"
+      working_directory:
+        description: "Path to the app inside the repo"
+        required: false
+        type: string
+        default: "."
+    secrets:
+      NEXT_PUBLIC_SENTRY_DSN:
+        required: false
+      SENTRY_AUTH_TOKEN:
+        required: false
+      SENTRY_ORG:
+        required: false
+      NEXT_PUBLIC_POSTHOG_KEY:
+        required: false
+      NEXT_PUBLIC_POSTHOG_HOST:
+        required: false
+
+jobs:
+  build:
+    name: Build & typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working_directory }}/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint (if configured)
+        run: |
+          if pnpm run | grep -qE "^\s*lint"; then
+            pnpm run lint
+          else
+            echo "No lint script configured. Skipping."
+          fi
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ secrets.NEXT_PUBLIC_POSTHOG_HOST }}
+          CI: "true"
+        run: pnpm run build

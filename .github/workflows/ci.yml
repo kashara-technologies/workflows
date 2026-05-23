@@ -1,8 +1,9 @@
 # Reusable workflow: Next.js CI pipeline.
-# Steps: install → typecheck → build.
-# Lint is run only if a lint script exists (no fail if absent).
+# Steps: install → typecheck → lint → build → (optional) smoke test
 #
-# Calling workflows pass node/pnpm versions if they need to override defaults.
+# Smoke test: if smoke_test_path is provided, start the built server in the
+# background, poll until ready, GET the path, assert HTTP 200 or 503 with a
+# valid health response shape, then kill the server.
 
 name: CI
 
@@ -24,6 +25,21 @@ on:
         required: false
         type: string
         default: "."
+      smoke_test_path:
+        description: "Path on the running server to smoke-test (e.g. /api/health). Empty to skip."
+        required: false
+        type: string
+        default: ""
+      smoke_test_port:
+        description: "Port the server listens on for the smoke test"
+        required: false
+        type: string
+        default: "3000"
+      smoke_test_timeout:
+        description: "Max seconds to wait for server to be ready"
+        required: false
+        type: string
+        default: "30"
     secrets:
       NEXT_PUBLIC_SENTRY_DSN:
         required: false
@@ -83,3 +99,84 @@ jobs:
           NEXT_PUBLIC_POSTHOG_HOST: ${{ secrets.NEXT_PUBLIC_POSTHOG_HOST }}
           CI: "true"
         run: pnpm run build
+
+      - name: Smoke test
+        if: inputs.smoke_test_path != ''
+        env:
+          PORT: ${{ inputs.smoke_test_port }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ secrets.NEXT_PUBLIC_POSTHOG_HOST }}
+        run: |
+          PORT="${{ inputs.smoke_test_port }}"
+          PATH_TO_HIT="${{ inputs.smoke_test_path }}"
+          TIMEOUT="${{ inputs.smoke_test_timeout }}"
+          URL="http://127.0.0.1:${PORT}${PATH_TO_HIT}"
+
+          echo "Starting server on port ${PORT}..."
+          pnpm start > server.log 2>&1 &
+          SERVER_PID=$!
+          echo "Server PID: ${SERVER_PID}"
+
+          # Cleanup on exit
+          trap 'kill ${SERVER_PID} 2>/dev/null || true' EXIT
+
+          # Poll until ready (or timeout)
+          READY=0
+          for i in $(seq 1 "${TIMEOUT}"); do
+            if curl -sf -o /dev/null "${URL}"; then
+              READY=1
+              echo "Server ready after ${i}s"
+              break
+            fi
+            # Check if server crashed
+            if ! kill -0 ${SERVER_PID} 2>/dev/null; then
+              echo "ERROR: Server process died. Logs:"
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [[ ${READY} -eq 0 ]]; then
+            echo "ERROR: Server did not become ready in ${TIMEOUT}s. Logs:"
+            cat server.log
+            exit 1
+          fi
+
+          # Hit endpoint and parse
+          echo ""
+          echo "Smoke testing ${URL}..."
+          HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" "${URL}")
+          BODY=$(cat response.json)
+
+          echo "HTTP code: ${HTTP_CODE}"
+          echo "Body:"
+          echo "${BODY}" | jq . 2>/dev/null || echo "${BODY}"
+
+          # Accept 200 (healthy/degraded) or 503 (some service down — still valid response shape)
+          if [[ "${HTTP_CODE}" != "200" ]] && [[ "${HTTP_CODE}" != "503" ]]; then
+            echo "ERROR: unexpected HTTP code ${HTTP_CODE}"
+            exit 1
+          fi
+
+          # Validate shape: must have 'status' field with one of the expected values
+          STATUS=$(echo "${BODY}" | jq -r '.status // empty')
+          case "${STATUS}" in
+            ok|degraded|down)
+              echo "✓ Smoke test passed (status: ${STATUS})"
+              ;;
+            *)
+              echo "ERROR: response 'status' is missing or invalid: '${STATUS}'"
+              exit 1
+              ;;
+          esac
+
+          # Validate 'checks' object exists
+          if ! echo "${BODY}" | jq -e '.checks' > /dev/null; then
+            echo "ERROR: response missing 'checks' object"
+            exit 1
+          fi
+
+          echo "✓ Response shape valid"

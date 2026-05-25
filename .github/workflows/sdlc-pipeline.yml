@@ -15,9 +15,13 @@ on:
         required: true
       ORCHESTRATOR_APP_PRIVATE_KEY:
         required: true
+      SLACK_WEBHOOK_CRITICAL:
+        required: true
+      SLACK_WEBHOOK_WARNING:
+        required: true
+      SLACK_WEBHOOK_INFO:
+        required: true
 
-# Concurrency: only one pipeline run per feature at a time.
-# Inflight runs cancel if a new push comes in for the same PRD.
 concurrency:
   group: sdlc-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
@@ -35,7 +39,7 @@ jobs:
       - name: Check out caller repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # need HEAD and HEAD~1 for the diff
+          fetch-depth: 2
 
       - name: Find the PRD that changed in this push
         id: find-prd
@@ -43,9 +47,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Find files matching docs/product/**/*.md that changed in this commit.
-          # If the push is the first commit on a branch, fall back to listing all
-          # PRD files (initial commit case).
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'docs/product/**/*.md' || true)
           else
@@ -56,7 +57,6 @@ jobs:
           echo "$CHANGED"
           echo ""
 
-          # Pick the first one. The design says one PRD per pipeline run.
           PRD_PATH=$(echo "$CHANGED" | head -1)
 
           if [[ -z "$PRD_PATH" ]]; then
@@ -65,8 +65,6 @@ jobs:
             exit 0
           fi
 
-          # Parse product + feature from the path.
-          # Expected: docs/product/<product>/<feature>.md
           if [[ ! "$PRD_PATH" =~ ^docs/product/([^/]+)/([^/]+)\.md$ ]]; then
             echo "::error::PRD path doesn't match docs/product/<product>/<feature>.md: $PRD_PATH"
             exit 1
@@ -81,16 +79,19 @@ jobs:
           echo "should_run=true" >> "$GITHUB_OUTPUT"
 
           echo ""
-          echo "✓ PRD: $PRD_PATH"
-          echo "  Product: $PRODUCT"
-          echo "  Feature: $FEATURE"
+          echo "PRD: $PRD_PATH"
+          echo "Product: $PRODUCT"
+          echo "Feature: $FEATURE"
 
   run-pipeline:
     name: Run SDLC pipeline
     needs: detect-prd
     if: needs.detect-prd.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # design doc section 5: 60min total pipeline cap
+    timeout-minutes: 60
+
+    outputs:
+      coder_retries_exhausted: ${{ steps.orchestrator.outputs.coder_retries_exhausted }}
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -105,7 +106,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: target-repo
-          fetch-depth: 0  # full history for build branch operations later
+          fetch-depth: 0
 
       - name: Check out workflows repo (for orchestrator code)
         uses: actions/checkout@v4
@@ -135,8 +136,7 @@ jobs:
         run: pnpm typecheck
 
       - name: Run orchestrator
-        # GITHUB_WORKSPACE inside the run gets overridden because we use sub-paths.
-        # The orchestrator needs the target repo path, not the runner workspace.
+        id: orchestrator
         env:
           TARGET_REPO_PATH: ${{ github.workspace }}/target-repo
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -147,5 +147,30 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Orchestrator output"
+          # Orchestrator can write coder_retries_exhausted=true to its output marker
+          # file if Phase D detects retry exhaustion. Default: false.
+          MARKER_FILE="${GITHUB_WORKSPACE}/.coder-retries-exhausted"
+          rm -f "$MARKER_FILE"
+
           pnpm orchestrator "${{ needs.detect-prd.outputs.prd_path }}"
+
+          if [[ -f "$MARKER_FILE" ]]; then
+            echo "coder_retries_exhausted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "coder_retries_exhausted=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "::endgroup::"
+
+  notify-failure:
+    name: Notify Slack on failure
+    needs: [detect-prd, run-pipeline]
+    if: failure()
+    uses: kashara-technologies/workflows/.github/workflows/slack-alert.yml@main
+    with:
+      job_name: ${{ needs.run-pipeline.result == 'failure' && 'Run SDLC pipeline' || 'Detect changed PRD' }}
+      workflow_name: SDLC Pipeline (${{ github.repository }})
+      severity: ${{ needs.run-pipeline.outputs.coder_retries_exhausted == 'true' && 'critical' || 'warning' }}
+    secrets:
+      SLACK_WEBHOOK_CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
+      SLACK_WEBHOOK_WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}
+      SLACK_WEBHOOK_INFO: ${{ secrets.SLACK_WEBHOOK_INFO }}

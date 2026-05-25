@@ -1,5 +1,3 @@
-// Builds a RunContext from the GH Actions environment.
-
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -10,12 +8,6 @@ function git(cmd: string, cwd: string): string {
   return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8' }).trim();
 }
 
-/**
- * Derive product + feature from the PRD path.
- *
- * Input:  "docs/product/pulse/auth.md"
- * Output: { product: "pulse", feature: "auth" }
- */
 export function parsePrdPath(prdPath: string): { product: string; feature: string } {
   const match = prdPath.match(/^docs\/product\/([^/]+)\/([^/]+)\.md$/);
   if (!match) {
@@ -26,7 +18,7 @@ export function parsePrdPath(prdPath: string): { product: string; feature: strin
 
 export function buildRunContext(prdPath: string): RunContext {
   const env = getEnv();
-  const repoPath = env.GITHUB_WORKSPACE;
+  const repoPath = env.TARGET_REPO_PATH;
 
   const { product, feature } = parsePrdPath(prdPath);
   const prdSha = git(`log -1 --format=%H -- ${prdPath}`, repoPath);

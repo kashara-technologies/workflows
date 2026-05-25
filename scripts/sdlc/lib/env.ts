@@ -16,8 +16,11 @@ const Env = z.object({
   ORCHESTRATOR_APP_INSTALLATION_ID: z.string().min(1),
   ORCHESTRATOR_APP_PRIVATE_KEY: z.string().min(1),
 
+  // Path to the target repo (the product repo, not the workflows repo).
+  // Set by the workflow YAML.
+  TARGET_REPO_PATH: z.string().min(1),
+
   // GH Actions provides these
-  GITHUB_WORKSPACE: z.string().min(1),
   GITHUB_REPOSITORY: z.string().min(1),
   GITHUB_SHA: z.string().min(1),
   GITHUB_EVENT_NAME: z.string().min(1).optional(),

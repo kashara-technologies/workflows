@@ -1,0 +1,151 @@
+name: SDLC Pipeline
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      SUPABASE_URL:
+        required: true
+      SUPABASE_SERVICE_KEY:
+        required: true
+      ORCHESTRATOR_APP_ID:
+        required: true
+      ORCHESTRATOR_APP_INSTALLATION_ID:
+        required: true
+      ORCHESTRATOR_APP_PRIVATE_KEY:
+        required: true
+
+# Concurrency: only one pipeline run per feature at a time.
+# Inflight runs cancel if a new push comes in for the same PRD.
+concurrency:
+  group: sdlc-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-prd:
+    name: Detect changed PRD
+    runs-on: ubuntu-latest
+    outputs:
+      prd_path: ${{ steps.find-prd.outputs.prd_path }}
+      product: ${{ steps.find-prd.outputs.product }}
+      feature: ${{ steps.find-prd.outputs.feature }}
+      should_run: ${{ steps.find-prd.outputs.should_run }}
+    steps:
+      - name: Check out caller repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need HEAD and HEAD~1 for the diff
+
+      - name: Find the PRD that changed in this push
+        id: find-prd
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Find files matching docs/product/**/*.md that changed in this commit.
+          # If the push is the first commit on a branch, fall back to listing all
+          # PRD files (initial commit case).
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'docs/product/**/*.md' || true)
+          else
+            CHANGED=$(git ls-files 'docs/product/**/*.md' || true)
+          fi
+
+          echo "Changed PRD files:"
+          echo "$CHANGED"
+          echo ""
+
+          # Pick the first one. The design says one PRD per pipeline run.
+          PRD_PATH=$(echo "$CHANGED" | head -1)
+
+          if [[ -z "$PRD_PATH" ]]; then
+            echo "No PRD changed. Skipping pipeline."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Parse product + feature from the path.
+          # Expected: docs/product/<product>/<feature>.md
+          if [[ ! "$PRD_PATH" =~ ^docs/product/([^/]+)/([^/]+)\.md$ ]]; then
+            echo "::error::PRD path doesn't match docs/product/<product>/<feature>.md: $PRD_PATH"
+            exit 1
+          fi
+
+          PRODUCT="${BASH_REMATCH[1]}"
+          FEATURE="${BASH_REMATCH[2]}"
+
+          echo "prd_path=$PRD_PATH" >> "$GITHUB_OUTPUT"
+          echo "product=$PRODUCT" >> "$GITHUB_OUTPUT"
+          echo "feature=$FEATURE" >> "$GITHUB_OUTPUT"
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "✓ PRD: $PRD_PATH"
+          echo "  Product: $PRODUCT"
+          echo "  Feature: $FEATURE"
+
+  run-pipeline:
+    name: Run SDLC pipeline
+    needs: detect-prd
+    if: needs.detect-prd.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # design doc section 5: 60min total pipeline cap
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ORCHESTRATOR_APP_ID: ${{ secrets.ORCHESTRATOR_APP_ID }}
+      ORCHESTRATOR_APP_INSTALLATION_ID: ${{ secrets.ORCHESTRATOR_APP_INSTALLATION_ID }}
+      ORCHESTRATOR_APP_PRIVATE_KEY: ${{ secrets.ORCHESTRATOR_APP_PRIVATE_KEY }}
+
+    steps:
+      - name: Check out caller repo
+        uses: actions/checkout@v4
+        with:
+          path: target-repo
+          fetch-depth: 0  # full history for build branch operations later
+
+      - name: Check out workflows repo (for orchestrator code)
+        uses: actions/checkout@v4
+        with:
+          repository: kashara-technologies/workflows
+          ref: main
+          path: workflows-repo
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: workflows-repo/pnpm-lock.yaml
+
+      - name: Install orchestrator dependencies
+        working-directory: workflows-repo
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck orchestrator
+        working-directory: workflows-repo
+        run: pnpm typecheck
+
+      - name: Run orchestrator
+        # GITHUB_WORKSPACE inside the run gets overridden because we use sub-paths.
+        # The orchestrator needs the target repo path, not the runner workspace.
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}/target-repo
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+        working-directory: workflows-repo
+        run: |
+          set -euo pipefail
+          echo "::group::Orchestrator output"
+          pnpm orchestrator "${{ needs.detect-prd.outputs.prd_path }}"
+          echo "::endgroup::"

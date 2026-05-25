@@ -55,3 +55,30 @@ Per-repo: `NEXT_PUBLIC_SENTRY_DSN` (DSN differs per product).
 ## Versioning
 
 Consumers pin to `@main` for now. Once workflows stabilize, switch to tagged releases (`@v1`).
+
+## SDLC Orchestrator
+
+The `scripts/sdlc/` directory hosts the Kashara SDLC pipeline orchestrator.
+
+Design doc: [docs/sdlc-pipeline-design.md](./docs/sdlc-pipeline-design.md)
+
+### Local development
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm orchestrator docs/product/pulse/auth.md
+```
+
+The orchestrator expects these env vars:
+
+- `ANTHROPIC_API_KEY`
+- `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+- `ORCHESTRATOR_APP_ID`, `ORCHESTRATOR_APP_INSTALLATION_ID`, `ORCHESTRATOR_APP_PRIVATE_KEY`
+- `GITHUB_WORKSPACE`, `GITHUB_REPOSITORY`, `GITHUB_SHA` (GH Actions sets these)
+
+In CI, these come from org-level GitHub Secrets.
+
+### Build phases
+
+See [docs/sdlc-pipeline-design.md section 10](./docs/sdlc-pipeline-design.md). Phase B (skeleton) is complete; Phases C through G ship agent capabilities incrementally.

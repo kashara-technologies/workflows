@@ -1,0 +1,28 @@
+{
+  "name": "kashara-workflows",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reusable GitHub workflows + SDLC orchestrator for Kashara",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p scripts/sdlc/tsconfig.json",
+    "orchestrator": "tsx scripts/sdlc/orchestrator.ts",
+    "typecheck": "tsc -p scripts/sdlc/tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@octokit/auth-app": "^8.2.0",
+    "@octokit/rest": "^22.0.0",
+    "@supabase/supabase-js": "^2.49.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "packageManager": "pnpm@11.2.2"
+}

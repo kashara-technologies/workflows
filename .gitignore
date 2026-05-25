@@ -1,0 +1,10 @@
+
+# Node
+node_modules/
+*.tsbuildinfo
+.env.local
+.env.*.local
+
+# Local scaffold/setup scripts (run-once, not committed)
+scaffold-*.sh
+update-*.sh

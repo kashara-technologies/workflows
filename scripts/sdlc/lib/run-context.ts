@@ -1,0 +1,53 @@
+// Builds a RunContext from the GH Actions environment.
+
+import { execSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import type { RunContext } from '../types.js';
+import { getEnv } from './env.js';
+
+function git(cmd: string, cwd: string): string {
+  return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8' }).trim();
+}
+
+/**
+ * Derive product + feature from the PRD path.
+ *
+ * Input:  "docs/product/pulse/auth.md"
+ * Output: { product: "pulse", feature: "auth" }
+ */
+export function parsePrdPath(prdPath: string): { product: string; feature: string } {
+  const match = prdPath.match(/^docs\/product\/([^/]+)\/([^/]+)\.md$/);
+  if (!match) {
+    throw new Error(`PRD path doesn't match expected pattern docs/product/<product>/<feature>.md: ${prdPath}`);
+  }
+  return { product: match[1]!, feature: match[2]! };
+}
+
+export function buildRunContext(prdPath: string): RunContext {
+  const env = getEnv();
+  const repoPath = env.GITHUB_WORKSPACE;
+
+  const { product, feature } = parsePrdPath(prdPath);
+  const prdSha = git(`log -1 --format=%H -- ${prdPath}`, repoPath);
+  if (!prdSha) {
+    throw new Error(`PRD file ${prdPath} has no git history in ${repoPath}`);
+  }
+
+  const repoSha = env.GITHUB_SHA;
+  const artifactsPath = path.join(repoPath, '.kashara', 'build', feature);
+
+  return {
+    pipelineRunId: randomUUID(),
+    prdPath,
+    product,
+    feature,
+    prdSha,
+    repoSha,
+    repo: env.GITHUB_REPOSITORY,
+    repoPath,
+    artifactsPath,
+    buildBranch: `build/${feature}`,
+    startedAt: new Date().toISOString(),
+  };
+}

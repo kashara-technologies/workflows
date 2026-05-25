@@ -214,6 +214,13 @@ async function main(): Promise<void> {
         finalDecision = 'fail';
         log.warn('Tester FAIL on final attempt; pipeline ends with failure', { attempt });
         await setBuildLabel({ prNumber: buildPr.number, label: 'build:failed' });
+        await writeCriticalRetryMarker({
+          feature: ctx.feature,
+          product: ctx.product,
+          pipelineRunId: ctx.pipelineRunId,
+          retriesUsed: MAX_CODER_RETRIES,
+          prUrl: buildPr.htmlUrl,
+        });
         break;
       }
       retriesUsed = attempt + 1;
@@ -314,6 +321,38 @@ async function writeRunJson(ctx: ReturnType<typeof buildRunContext>): Promise<vo
     JSON.stringify(body, null, 2) + '\n',
     'utf-8',
   );
+}
+
+interface CriticalRetryMarkerPayload {
+  feature: string;
+  product: string;
+  pipelineRunId: string;
+  retriesUsed: number;
+  prUrl: string;
+}
+
+/**
+ * Drop `.coder-retries-exhausted` into $GITHUB_WORKSPACE so the Slack alert
+ * step in sdlc-pipeline.yml routes to `#alerts-critical`. Everything else
+ * falls back to the warning channel.
+ *
+ * Only called from the retry-exhaustion branch; orchestrator crashes from
+ * other causes (API errors, network, etc.) stay at warning severity.
+ */
+async function writeCriticalRetryMarker(payload: CriticalRetryMarkerPayload): Promise<void> {
+  const { writeFile } = await import('node:fs/promises');
+  const workspace = process.env.GITHUB_WORKSPACE;
+  if (!workspace) {
+    log.warn('GITHUB_WORKSPACE not set; cannot write coder-retries-exhausted marker');
+    return;
+  }
+  const markerPath = path.join(workspace, '.coder-retries-exhausted');
+  await writeFile(markerPath, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  log.info('Wrote coder-retries-exhausted marker for critical Slack routing', {
+    markerPath,
+    feature: payload.feature,
+    pipelineRunId: payload.pipelineRunId,
+  });
 }
 
 main().catch((err) => {

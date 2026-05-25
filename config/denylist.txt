@@ -1,0 +1,54 @@
+# Shell-command denylist for SDLC pipeline agents.
+#
+# Format: one JavaScript regular expression per line. The pattern is tested
+# against the full command string with `RegExp.test`; it matches if it finds
+# any substring (the patterns are not anchored).
+#
+# Empty lines and lines starting with '#' are ignored.
+#
+# Source of truth: docs/sdlc-pipeline-design.md section 5.
+# Keep this list in sync with that section. When updating, also update the
+# design doc with the same change.
+
+# Destructive recursive deletes.
+rm\s+-rf
+rm\s+-fr
+
+# Force pushes.
+git\s+push\s+--force
+git\s+push\s+-f(\s|$)
+
+# Package publishing.
+pnpm\s+publish
+npm\s+publish
+yarn\s+publish
+
+# PR / release operations reserved for the orchestrator + humans.
+gh\s+pr\s+merge
+gh\s+pr\s+close
+gh\s+release\s+create
+
+# Privilege escalation.
+(^|\s)sudo(\s|$)
+chmod\s+777
+(^|\s)chown(\s|$)
+
+# Git hook bypass.
+--no-verify
+
+# Any --force flag, including --force-with-lease (deliberately conservative;
+# the orchestrator handles force-push itself, agents never need it).
+--force
+
+# Writes into system locations.
+>\s*/etc/
+>\s*/usr/
+>\s*/var/
+>\s*/System/
+
+# Pipe-to-shell from a downloaded payload.
+curl\s.+\|\s*sh($|\s)
+wget\s.+\|\s*sh($|\s)
+
+# Shell evaluation of subshell expansion.
+eval\s+\$\(

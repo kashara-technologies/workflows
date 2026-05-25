@@ -10,7 +10,7 @@
     "typecheck": "tsc -p scripts/sdlc/tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",

@@ -2,7 +2,9 @@
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { runPlanner } from './agents/planner.js';
 import { getEnv } from './lib/env.js';
+import { commitAndPushArtifacts } from './lib/git.js';
 import { log } from './lib/logger.js';
 import { buildRunContext, parsePrdPath } from './lib/run-context.js';
 import { getSupabase } from './lib/supabase.js';
@@ -53,7 +55,26 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  log.info('Phase B skeleton complete. Exiting cleanly.', {
+  const planner = await runPlanner(ctx);
+  log.info('Planner stage complete', {
+    planPath: planner.planPath,
+    turns: planner.agentResult.turns,
+    costUsd: planner.agentResult.costUsd,
+    inputTokens: planner.agentResult.usage.inputTokens,
+    outputTokens: planner.agentResult.usage.outputTokens,
+  });
+
+  // Push the artifact to the build branch on the product repo.
+  const relPlanPath = path.relative(ctx.repoPath, planner.planPath);
+  const { commitSha, branch } = await commitAndPushArtifacts({
+    repoPath: ctx.repoPath,
+    branch: ctx.buildBranch,
+    paths: [relPlanPath],
+    message: `chore(build): planner output for ${ctx.feature}\n\nPipeline run ${ctx.pipelineRunId}.`,
+  });
+  log.info('Artifact pushed', { branch, commitSha, relPlanPath });
+
+  log.info('Phase C planner stage complete. Exiting cleanly.', {
     pipelineRunId: ctx.pipelineRunId,
   });
 }

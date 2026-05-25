@@ -80,9 +80,10 @@ async function main(): Promise<void> {
   const audit = createAuditLogger(ctx.artifactsPath);
   const artifactsRelDir = path.relative(ctx.repoPath, ctx.artifactsPath);
 
-  // Push an initial empty commit so the build branch exists on the remote and
-  // we can open a PR against it. Without this, findOrCreateBuildPr would fail
-  // with "head ref does not exist".
+  // Bootstrap commit: write run.json (per design doc section 4) so the build
+  // branch differs from main. Without this, the PR-create endpoint fails with
+  // "No commits between main and build/auth".
+  await writeRunJson(ctx);
   await commitAndPushBuildBranch({
     repoPath: ctx.repoPath,
     branch: ctx.buildBranch,
@@ -292,6 +293,27 @@ async function main(): Promise<void> {
   if (!pipelineSucceeded) {
     process.exit(1);
   }
+}
+
+async function writeRunJson(ctx: ReturnType<typeof buildRunContext>): Promise<void> {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  await mkdir(ctx.artifactsPath, { recursive: true });
+  const body = {
+    run_id: ctx.pipelineRunId,
+    feature: ctx.feature,
+    product: ctx.product,
+    prd_path: ctx.prdPath,
+    prd_sha: ctx.prdSha,
+    repo: ctx.repo,
+    repo_sha: ctx.repoSha,
+    build_branch: ctx.buildBranch,
+    started_at: ctx.startedAt,
+  };
+  await writeFile(
+    path.join(ctx.artifactsPath, 'run.json'),
+    JSON.stringify(body, null, 2) + '\n',
+    'utf-8',
+  );
 }
 
 main().catch((err) => {

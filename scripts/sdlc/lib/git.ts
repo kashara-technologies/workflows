@@ -1,9 +1,13 @@
 // Git operations on the target repo, executed by the orchestrator using the
 // kashara-orchestrator GitHub App installation token.
 //
-// Scope intentionally narrow for Phase C:
-//   * `commitAndPushArtifacts` creates / resets a build/<feature> branch off
-//     main, commits one or more files, and force-pushes it to origin.
+// Lifecycle for one pipeline run:
+//   1. prepareBuildBranch: configure identity, swap actions/checkout's
+//      extraheader for one carrying the App token, fetch base, check out
+//      build/<feature> off origin/<base>.
+//   2. (Agents run, writing into the working tree.)
+//   3. commitAndPushBuildBranch: git add -A, commit if there's anything to
+//      commit, and force-push to origin/build/<feature>.
 
 import { spawn } from 'node:child_process';
 import { getEnv } from './env.js';
@@ -24,53 +28,39 @@ function runGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<s
   });
 }
 
-export interface CommitAndPushParams {
-  /** Path to the checked-out target repo. */
+export interface PrepareBuildBranchParams {
   repoPath: string;
-  /** Branch name to push to, e.g. "build/auth". */
   branch: string;
-  /** Base branch to fork from when the build branch is new. */
   baseBranch?: string;
-  /** Paths (relative to repoPath) to add and commit. */
-  paths: string[];
-  /** Commit message. */
-  message: string;
-  /** Commit author/committer identity. */
   authorName?: string;
   authorEmail?: string;
 }
 
-export async function commitAndPushArtifacts(params: CommitAndPushParams): Promise<{
-  commitSha: string;
-  branch: string;
-}> {
-  const env = getEnv();
+/**
+ * Set up the working tree so the orchestrator can write to the build branch
+ * with the App's installation token. Call once at the start of a pipeline run.
+ * Swaps actions/checkout's extraheader for one carrying the App token and
+ * checks out build/<feature> off origin/<base>.
+ */
+export async function prepareBuildBranch(params: PrepareBuildBranchParams): Promise<void> {
   const {
     repoPath,
     branch,
     baseBranch = 'main',
-    paths,
-    message,
     authorName = 'kashara-orchestrator[bot]',
     authorEmail = 'kashara-orchestrator[bot]@users.noreply.github.com',
   } = params;
 
   const token = await getInstallationToken();
-  const remoteUrl = `https://x-access-token:${token}@github.com/${env.GITHUB_REPOSITORY}.git`;
 
-  log.info('Preparing build branch', { branch, baseBranch, paths: paths.length });
+  log.info('Preparing build branch', { branch, baseBranch });
 
-  // Configure identity locally for this repo only.
   await runGit(['config', 'user.name', authorName], repoPath);
   await runGit(['config', 'user.email', authorEmail], repoPath);
 
   // actions/checkout@v4 stores the caller workflow's GITHUB_TOKEN in
-  // http.https://github.com/.extraheader. That Authorization header overrides
-  // any URL-embedded credentials, so a naive push with the App token in the
-  // URL silently re-authenticates as the (read-only on this org) workflow
-  // token. Swap the extraheader for one that carries the App installation
-  // token; this lets fetch, push, and any later origin-relative git
-  // operations all run as the App.
+  // http.https://github.com/.extraheader. That header overrides any
+  // URL-embedded credentials, so swap it for one carrying the App token.
   const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
   await runGit(
     [
@@ -82,31 +72,52 @@ export async function commitAndPushArtifacts(params: CommitAndPushParams): Promi
   );
   log.info('Replaced github.com extraheader with App installation token');
 
-  // Ensure we have an up-to-date base.
   await runGit(['fetch', 'origin', baseBranch, '--depth=1'], repoPath);
-
-  // Recreate the branch from base. Force semantics: every pipeline run rebuilds
-  // the branch from main, then force-pushes. Matches the design's "force-push
-  // on subsequent runs" behavior.
   await runGit(['checkout', '-B', branch, `origin/${baseBranch}`], repoPath);
+}
 
-  await runGit(['add', '--', ...paths], repoPath);
+export interface CommitAndPushBuildBranchParams {
+  repoPath: string;
+  branch: string;
+  message: string;
+}
 
-  // If nothing changed (e.g. plan identical to a prior run), skip the commit.
+export interface CommitAndPushResult {
+  branch: string;
+  commitSha: string;
+  /** True if a new commit was created; false if the working tree matched HEAD. */
+  committed: boolean;
+}
+
+/**
+ * Stage every change in the working tree, commit if there's something to
+ * commit, and force-push to origin. Safe to call on an unchanged tree
+ * (skips the commit but still pushes the branch tip).
+ */
+export async function commitAndPushBuildBranch(
+  params: CommitAndPushBuildBranchParams,
+): Promise<CommitAndPushResult> {
+  const env = getEnv();
+  const { repoPath, branch, message } = params;
+
+  await runGit(['add', '-A'], repoPath);
+
   const status = await runGit(['status', '--porcelain'], repoPath);
+  let committed = false;
   if (!status) {
-    log.info('No changes to commit; pushing branch as-is');
+    log.info('No changes to commit on build branch', { branch });
   } else {
     await runGit(['commit', '-m', message], repoPath);
+    committed = true;
   }
 
-  // Push with the App token. Force-with-lease is too restrictive here since we
-  // reset the branch from main; use plain force-push consistent with the
-  // design's contract.
-  await runGit(['push', '--force', remoteUrl, `HEAD:refs/heads/${branch}`], repoPath);
+  await runGit(
+    ['push', '--force', 'origin', `HEAD:refs/heads/${branch}`],
+    repoPath,
+  );
 
   const commitSha = await runGit(['rev-parse', 'HEAD'], repoPath);
-  log.info('Pushed build branch', { branch, commitSha });
+  log.info('Pushed build branch', { repo: env.GITHUB_REPOSITORY, branch, commitSha, committed });
 
-  return { commitSha, branch };
+  return { branch, commitSha, committed };
 }

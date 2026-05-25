@@ -64,6 +64,21 @@ export async function commitAndPushArtifacts(params: CommitAndPushParams): Promi
   await runGit(['config', 'user.name', authorName], repoPath);
   await runGit(['config', 'user.email', authorEmail], repoPath);
 
+  // actions/checkout@v4 stores the caller workflow's GITHUB_TOKEN in an
+  // http.<url>.extraheader Authorization line. That header overrides the
+  // token embedded in any push URL, so without clearing it our App token
+  // gets silently replaced by the (read-only on this org) workflow token.
+  // Clearing the extraheader lets the URL-embedded App token take effect.
+  try {
+    await runGit(
+      ['config', '--unset-all', `http.https://github.com/.extraheader`],
+      repoPath,
+    );
+    log.info('Cleared actions/checkout extraheader for github.com');
+  } catch {
+    // Config key may not exist (e.g. in local runs). Safe to ignore.
+  }
+
   // Ensure we have an up-to-date base.
   await runGit(['fetch', 'origin', baseBranch, '--depth=1'], repoPath);
 

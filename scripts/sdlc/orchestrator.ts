@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runPlanner } from './agents/planner.js';
 import { getEnv } from './lib/env.js';
 import { commitAndPushArtifacts } from './lib/git.js';
+import { assertCanWriteToRepo } from './lib/github-app.js';
 import { log } from './lib/logger.js';
 import { buildRunContext, parsePrdPath } from './lib/run-context.js';
 import { getSupabase } from './lib/supabase.js';
@@ -54,6 +55,10 @@ async function main(): Promise<void> {
     log.error('Supabase connection failed', { error: (err as Error).message });
     process.exit(1);
   }
+
+  // Fail fast if the App can't push the artifact, before spending Anthropic
+  // credit on the planner.
+  await assertCanWriteToRepo(env.GITHUB_REPOSITORY);
 
   const planner = await runPlanner(ctx);
   log.info('Planner stage complete', {

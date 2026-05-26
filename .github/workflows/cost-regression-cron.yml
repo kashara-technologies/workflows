@@ -22,14 +22,13 @@ jobs:
       TARGET_REPO_PATH: ${{ github.workspace }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_SHA: ${{ github.sha }}
-      # Optional tuning knobs. Defaults: $30 absolute cap, 1.5x median, $10
-      # floor, 7-day window, 24-hour fresh window. Set as repo/org variables
-      # to override without code changes.
-      COST_REGRESSION_ABSOLUTE_CAP_USD: ${{ vars.COST_REGRESSION_ABSOLUTE_CAP_USD }}
-      COST_REGRESSION_RELATIVE_MULTIPLIER: ${{ vars.COST_REGRESSION_RELATIVE_MULTIPLIER }}
-      COST_REGRESSION_FLOOR_USD: ${{ vars.COST_REGRESSION_FLOOR_USD }}
-      COST_REGRESSION_WINDOW_DAYS: ${{ vars.COST_REGRESSION_WINDOW_DAYS }}
-      COST_REGRESSION_FRESH_HOURS: ${{ vars.COST_REGRESSION_FRESH_HOURS }}
+      # Envelope from docs/handoffs/phase-g-handoff.md section 1.
+      # Defaults: $0.40 min, $8.00 max, product=pulse, 48 hour recency.
+      # Set as repo/org variables to override without code changes.
+      COST_REGRESSION_MIN_USD: ${{ vars.COST_REGRESSION_MIN_USD }}
+      COST_REGRESSION_MAX_USD: ${{ vars.COST_REGRESSION_MAX_USD }}
+      COST_REGRESSION_PRODUCT: ${{ vars.COST_REGRESSION_PRODUCT }}
+      COST_REGRESSION_RECENCY_HOURS: ${{ vars.COST_REGRESSION_RECENCY_HOURS }}
     steps:
       - uses: actions/checkout@v4
 

@@ -1,75 +1,50 @@
-// Cost-per-pipeline-run regression detector.
+// Per-pipeline cost envelope check.
 //
-// Built on top of F3's monthly aggregation. The monthly budget cron asks
-// "are we burning the credit?". This asks "is a single pipeline run
-// suddenly costing twice what it used to?" — the early warning for prompt
-// regressions, model price changes, or a runaway retry loop that isn't yet
-// hitting the kill switch.
+// Spec from docs/handoffs/phase-g-handoff.md section 1:
+//   * Baseline envelope: $0.40 min, $8.00 max per pipeline run including
+//     retries.
+//   * Query the most recent pipeline_run cost from Supabase.
+//   * Assert it falls within the envelope.
+//   * Alert via Slack #alerts-warning if out of bounds. Does NOT block PR
+//     merges; the signal is the alert.
 //
-// Approach:
-//   1. Pull cost_usd for every successful agent_run in the trailing 7-day
-//      window. Group by pipeline_run_id, sum to get the per-pipeline cost.
-//   2. Compute median over that window. Anything in the most recent 24
-//      hours is a "fresh" run.
-//   3. A fresh run is out-of-envelope if it exceeds an absolute cap (default
-//      $30) OR exceeds (relative multiplier × median, default 1.5×) AND a
-//      floor (default $10) to avoid alerting on noise when the median is
-//      tiny because the window is still warming up.
+// Implementation note: F2 emits pipeline_run_completed to PostHog, but the
+// canonical durable record is the F1 agent_runs table in Supabase. So
+// "pipeline_run cost" here = sum(cost_usd) over agent_runs rows sharing the
+// most recent pipeline_run_id (within a recency window so we don't pick up
+// a stale never-finished run).
 
 import { log } from './logger.js';
 import { getSupabase } from './supabase.js';
 
-export const DEFAULT_ABSOLUTE_CAP_USD = 30;
-export const DEFAULT_RELATIVE_MULTIPLIER = 1.5;
-export const DEFAULT_FLOOR_USD = 10;
-export const DEFAULT_WINDOW_DAYS = 7;
-export const DEFAULT_FRESH_HOURS = 24;
-
-export interface PipelineRunCost {
-  pipelineRunId: string;
-  costUsd: number;
-  firstStartedAt: string;
-  agentRunCount: number;
-}
+export const DEFAULT_MIN_USD = 0.4;
+export const DEFAULT_MAX_USD = 8.0;
+export const DEFAULT_PRODUCT = 'pulse';
+/** Look back this many hours when picking the "most recent" pipeline run. */
+export const DEFAULT_RECENCY_HOURS = 48;
 
 export interface CostRegressionConfig {
-  absoluteCapUsd: number;
-  relativeMultiplier: number;
-  floorUsd: number;
-  windowDays: number;
-  freshHours: number;
+  minUsd: number;
+  maxUsd: number;
+  product: string;
+  recencyHours: number;
+}
+
+export interface MostRecentPipelineRun {
+  pipelineRunId: string;
+  product: string;
+  totalCostUsd: number;
+  latestStartedAt: string;
+  agentRunCount: number;
 }
 
 export interface CostRegressionReport {
   config: CostRegressionConfig;
-  windowStartIso: string;
-  freshSinceIso: string;
-  baselineMedianUsd: number | null;
-  pipelineRunsInWindow: number;
-  freshRuns: PipelineRunCost[];
-  outOfEnvelope: OutOfEnvelopeRun[];
-}
-
-export interface OutOfEnvelopeRun extends PipelineRunCost {
+  recencySinceIso: string;
+  /** Null when no pipeline run was found in the recency window. */
+  mostRecent: MostRecentPipelineRun | null;
+  outOfEnvelope: boolean;
   reasons: string[];
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[mid]!;
-  return ((sorted[mid - 1]! + sorted[mid]!) / 2);
-}
-
-export function defaultConfig(): CostRegressionConfig {
-  return {
-    absoluteCapUsd: parseNumberFromEnv('COST_REGRESSION_ABSOLUTE_CAP_USD', DEFAULT_ABSOLUTE_CAP_USD),
-    relativeMultiplier: parseNumberFromEnv('COST_REGRESSION_RELATIVE_MULTIPLIER', DEFAULT_RELATIVE_MULTIPLIER),
-    floorUsd: parseNumberFromEnv('COST_REGRESSION_FLOOR_USD', DEFAULT_FLOOR_USD),
-    windowDays: parseNumberFromEnv('COST_REGRESSION_WINDOW_DAYS', DEFAULT_WINDOW_DAYS),
-    freshHours: parseNumberFromEnv('COST_REGRESSION_FRESH_HOURS', DEFAULT_FRESH_HOURS),
-  };
 }
 
 function parseNumberFromEnv(name: string, fallback: number): number {
@@ -79,33 +54,18 @@ function parseNumberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/**
- * Group rows by pipeline_run_id, summing cost_usd and capturing the earliest
- * started_at. Used by both detection and report generation.
- */
-function groupRows(
-  rows: Array<{ pipeline_run_id: string; cost_usd: unknown; started_at: string }>,
-): PipelineRunCost[] {
-  const acc = new Map<string, PipelineRunCost>();
-  for (const row of rows) {
-    const cost = coerceCost(row.cost_usd);
-    const existing = acc.get(row.pipeline_run_id);
-    if (existing) {
-      existing.costUsd += cost;
-      existing.agentRunCount += 1;
-      if (row.started_at < existing.firstStartedAt) {
-        existing.firstStartedAt = row.started_at;
-      }
-    } else {
-      acc.set(row.pipeline_run_id, {
-        pipelineRunId: row.pipeline_run_id,
-        costUsd: cost,
-        firstStartedAt: row.started_at,
-        agentRunCount: 1,
-      });
-    }
-  }
-  return [...acc.values()].map((p) => ({ ...p, costUsd: Number(p.costUsd.toFixed(4)) }));
+function parseStringFromEnv(name: string, fallback: string): string {
+  const raw = process.env[name];
+  return raw && raw.trim() !== '' ? raw : fallback;
+}
+
+export function defaultConfig(): CostRegressionConfig {
+  return {
+    minUsd: parseNumberFromEnv('COST_REGRESSION_MIN_USD', DEFAULT_MIN_USD),
+    maxUsd: parseNumberFromEnv('COST_REGRESSION_MAX_USD', DEFAULT_MAX_USD),
+    product: parseStringFromEnv('COST_REGRESSION_PRODUCT', DEFAULT_PRODUCT),
+    recencyHours: parseNumberFromEnv('COST_REGRESSION_RECENCY_HOURS', DEFAULT_RECENCY_HOURS),
+  };
 }
 
 function coerceCost(v: unknown): number {
@@ -121,61 +81,77 @@ export async function computeCostRegression(
   now: Date = new Date(),
   config: CostRegressionConfig = defaultConfig(),
 ): Promise<CostRegressionReport> {
-  const windowStart = new Date(now.getTime() - config.windowDays * 24 * 60 * 60 * 1000);
-  const freshSince = new Date(now.getTime() - config.freshHours * 60 * 60 * 1000);
-  const windowStartIso = windowStart.toISOString();
-  const freshSinceIso = freshSince.toISOString();
+  const recencySince = new Date(now.getTime() - config.recencyHours * 60 * 60 * 1000);
+  const recencySinceIso = recencySince.toISOString();
 
   const sb = getSupabase();
   const { data, error } = await sb
     .from('agent_runs')
-    .select('pipeline_run_id, cost_usd, started_at')
-    .gte('started_at', windowStartIso)
+    .select('pipeline_run_id, cost_usd, started_at, product')
+    .gte('started_at', recencySinceIso)
+    .eq('product', config.product)
     .eq('status', 'success')
-    .limit(20_000);
+    .order('started_at', { ascending: false })
+    .limit(500);
   if (error) {
     log.warn('cost-regression query failed', { error: error.message });
     return {
       config,
-      windowStartIso,
-      freshSinceIso,
-      baselineMedianUsd: null,
-      pipelineRunsInWindow: 0,
-      freshRuns: [],
-      outOfEnvelope: [],
+      recencySinceIso,
+      mostRecent: null,
+      outOfEnvelope: false,
+      reasons: [`query failed: ${error.message}`],
     };
   }
 
-  const grouped = groupRows(
-    (data ?? []) as Array<{ pipeline_run_id: string; cost_usd: unknown; started_at: string }>,
-  );
-  const baselineMedianUsd = median(grouped.map((g) => g.costUsd));
-  const freshRuns = grouped.filter((g) => g.firstStartedAt >= freshSinceIso);
-  const outOfEnvelope: OutOfEnvelopeRun[] = [];
-  for (const r of freshRuns) {
-    const reasons: string[] = [];
-    if (r.costUsd >= config.absoluteCapUsd) {
-      reasons.push(`absolute cap exceeded ($${r.costUsd.toFixed(2)} >= $${config.absoluteCapUsd})`);
-    }
-    if (
-      baselineMedianUsd != null &&
-      r.costUsd >= config.floorUsd &&
-      r.costUsd >= config.relativeMultiplier * baselineMedianUsd
-    ) {
-      reasons.push(
-        `relative regression ($${r.costUsd.toFixed(2)} >= ${config.relativeMultiplier}x median $${baselineMedianUsd.toFixed(2)})`,
-      );
-    }
-    if (reasons.length > 0) outOfEnvelope.push({ ...r, reasons });
+  if (!data || data.length === 0) {
+    return {
+      config,
+      recencySinceIso,
+      mostRecent: null,
+      outOfEnvelope: false,
+      reasons: [],
+    };
+  }
+
+  // First row has the latest started_at. Its pipeline_run_id is the most
+  // recent run. Sum cost_usd across every row that shares that id.
+  const latestRow = data[0]!;
+  const targetRunId = latestRow.pipeline_run_id as string;
+  let totalCostUsd = 0;
+  let agentRunCount = 0;
+  let latestStartedAt = '';
+  for (const row of data) {
+    if (row.pipeline_run_id !== targetRunId) continue;
+    totalCostUsd += coerceCost(row.cost_usd);
+    agentRunCount += 1;
+    if (row.started_at > latestStartedAt) latestStartedAt = row.started_at as string;
+  }
+  totalCostUsd = Number(totalCostUsd.toFixed(4));
+
+  const reasons: string[] = [];
+  if (totalCostUsd < config.minUsd) {
+    reasons.push(
+      `total cost $${totalCostUsd.toFixed(2)} is below envelope minimum $${config.minUsd.toFixed(2)}`,
+    );
+  }
+  if (totalCostUsd > config.maxUsd) {
+    reasons.push(
+      `total cost $${totalCostUsd.toFixed(2)} is above envelope maximum $${config.maxUsd.toFixed(2)}`,
+    );
   }
 
   return {
     config,
-    windowStartIso,
-    freshSinceIso,
-    baselineMedianUsd: baselineMedianUsd != null ? Number(baselineMedianUsd.toFixed(4)) : null,
-    pipelineRunsInWindow: grouped.length,
-    freshRuns,
-    outOfEnvelope,
+    recencySinceIso,
+    mostRecent: {
+      pipelineRunId: targetRunId,
+      product: config.product,
+      totalCostUsd,
+      latestStartedAt,
+      agentRunCount,
+    },
+    outOfEnvelope: reasons.length > 0,
+    reasons,
   };
 }

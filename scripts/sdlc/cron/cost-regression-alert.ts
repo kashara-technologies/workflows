@@ -1,9 +1,13 @@
 // Nightly cost regression cron.
 //
-// Reads agent_runs over the trailing window, groups by pipeline_run_id,
-// detects out-of-envelope fresh runs, and drops .cost-regression-alert.json
-// into $GITHUB_WORKSPACE when at least one fires. Exit 0 always; the alert
-// is the signal.
+// Per docs/handoffs/phase-g-handoff.md section 1:
+//   * Query the most recent pipeline_run cost from Supabase.
+//   * Assert it falls within the $0.40 / $8.00 envelope.
+//   * Alert via Slack #alerts-warning if out of bounds. Does NOT block PRs.
+//
+// Drops .cost-regression-alert.json into $GITHUB_WORKSPACE when the most
+// recent run is out of envelope; the workflow downstream routes Slack from
+// the marker. Always exits 0 so the cron itself never pages.
 
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,26 +18,30 @@ async function main(): Promise<void> {
   const report = await computeCostRegression();
   log.info('Cost regression summary', {
     config: report.config,
-    windowStartIso: report.windowStartIso,
-    freshSinceIso: report.freshSinceIso,
-    pipelineRunsInWindow: report.pipelineRunsInWindow,
-    freshRuns: report.freshRuns.length,
-    baselineMedianUsd: report.baselineMedianUsd,
-    outOfEnvelope: report.outOfEnvelope.length,
+    recencySinceIso: report.recencySinceIso,
+    mostRecent: report.mostRecent,
+    outOfEnvelope: report.outOfEnvelope,
+    reasons: report.reasons,
   });
 
-  for (const flagged of report.outOfEnvelope) {
-    log.warn('Out-of-envelope pipeline run', flagged as unknown as Record<string, unknown>);
-  }
-
-  if (report.outOfEnvelope.length === 0) {
-    log.info('All fresh runs inside envelope; no marker written');
+  if (!report.mostRecent) {
+    log.info('No recent pipeline run found in window; nothing to check');
     return;
   }
 
+  if (!report.outOfEnvelope) {
+    log.info('Most recent pipeline run is inside envelope; no marker written');
+    return;
+  }
+
+  log.warn('Most recent pipeline run is out of envelope', {
+    mostRecent: report.mostRecent,
+    reasons: report.reasons,
+  });
+
   const workspace = process.env.GITHUB_WORKSPACE;
   if (!workspace) {
-    log.warn('Out-of-envelope runs detected but GITHUB_WORKSPACE unset; cannot write marker');
+    log.warn('Out-of-envelope detected but GITHUB_WORKSPACE unset; cannot write marker');
     return;
   }
   const markerPath = path.join(workspace, '.cost-regression-alert.json');

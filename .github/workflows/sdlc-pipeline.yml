@@ -21,6 +21,10 @@ on:
         required: true
       SLACK_WEBHOOK_INFO:
         required: true
+      POSTHOG_KEY:
+        required: false
+      POSTHOG_HOST:
+        required: false
 
 concurrency:
   group: sdlc-${{ github.repository }}-${{ github.ref }}
@@ -105,6 +109,10 @@ jobs:
       # orchestrator refuses to start a new run if the current month's
       # agent_runs.cost_usd is over this value.
       SDLC_MONTHLY_KILL_SWITCH_USD: ${{ vars.SDLC_MONTHLY_KILL_SWITCH_USD }}
+      # PostHog telemetry (EU instance per Frankfurt residency posture).
+      # Either missing -> telemetry disabled, pipeline still runs.
+      POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+      POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
     steps:
       - name: Check out caller repo

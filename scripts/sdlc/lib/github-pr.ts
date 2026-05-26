@@ -190,3 +190,28 @@ export async function markPrReadyForReview(prNumber: number): Promise<void> {
   );
   log.info('Marked PR ready for review', { prNumber });
 }
+
+/**
+ * Convert a PR back to draft. Used when the reviewer BLOCKs after a previous
+ * APPROVE flipped the PR ready-for-review. GraphQL only; the REST endpoint
+ * cannot convert ready-for-review to draft.
+ */
+export async function convertPrToDraft(prNumber: number): Promise<void> {
+  const gh = await client();
+  const { owner, repo } = repoSlug();
+  const pr = await gh.pulls.get({ owner, repo, pull_number: prNumber });
+  if (pr.data.draft) {
+    log.info('PR already draft; skipping convert', { prNumber });
+    return;
+  }
+  const nodeId = pr.data.node_id;
+  await gh.graphql(
+    `mutation($id: ID!) {
+       convertPullRequestToDraft(input: { pullRequestId: $id }) {
+         pullRequest { number }
+       }
+     }`,
+    { id: nodeId },
+  );
+  log.info('Converted PR to draft', { prNumber });
+}

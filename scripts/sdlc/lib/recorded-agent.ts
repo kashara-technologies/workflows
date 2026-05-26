@@ -1,0 +1,145 @@
+// Recording wrapper around runAgent.
+//
+// Adds Supabase observability without leaking that concern into the planner /
+// coder / tester / reviewer agent files. For each invocation:
+//   1. Upload the input payload (system + user blocks + tool list) to the
+//      agent-payloads bucket.
+//   2. Run the agent.
+//   3. On success: upload the output payload, insert an agent_runs row with
+//      status=success and the resolved payload paths.
+//   4. On failure: insert an agent_runs row with status=failure and the
+//      error message, then re-throw.
+//
+// Observability is best-effort. Storage / DB outages never block the
+// pipeline; they emit warnings and let the agent result through.
+
+import { runAgent, type RunAgentParams, type RunAgentResult } from './anthropic.js';
+import { insertAgentRun } from './agent-runs.js';
+import { uploadPayload } from './payload-storage.js';
+import { log } from './logger.js';
+import type { AgentName } from '../types.js';
+import type { RunContext } from '../types.js';
+
+export interface RecordingMetadata {
+  ctx: RunContext;
+  agent: AgentName;
+  /** 0 for the first attempt; 1, 2, 3 for coder retries. Other agents: 0. */
+  retryCount: number;
+}
+
+export interface RecordedAgentParams extends RunAgentParams {
+  recording: RecordingMetadata;
+}
+
+function inputPayloadFor(params: RunAgentParams): unknown {
+  return {
+    model: params.model ?? null,
+    system: params.system,
+    userBlocks: params.userBlocks,
+    tools: params.tools.map((t) => ({ name: 'name' in t ? t.name : null, type: t.type })),
+    maxTokens: params.maxTokens ?? null,
+    maxIterations: params.maxIterations ?? null,
+  };
+}
+
+function outputPayloadFor(result: RunAgentResult): unknown {
+  return {
+    finalText: result.finalText,
+    turns: result.turns,
+    usage: result.usage,
+    costUsd: result.costUsd,
+  };
+}
+
+export async function runRecordedAgent(params: RecordedAgentParams): Promise<RunAgentResult> {
+  const { recording, ...runArgs } = params;
+  const { ctx, agent, retryCount } = recording;
+  const startedAt = new Date().toISOString();
+
+  // Best-effort input payload upload before the call. Failure logs a warning;
+  // we still proceed with the agent.
+  const inputPayloadPath = await safe(() =>
+    uploadPayload({
+      pipelineRunId: ctx.pipelineRunId,
+      agent,
+      retryCount,
+      kind: 'input',
+      data: inputPayloadFor(runArgs),
+    }),
+  );
+
+  let result: RunAgentResult;
+  try {
+    result = await runAgent(runArgs);
+  } catch (err) {
+    const finishedAt = new Date().toISOString();
+    await safe(() =>
+      insertAgentRun({
+        pipelineRunId: ctx.pipelineRunId,
+        featurePath: ctx.prdPath,
+        product: ctx.product,
+        agent,
+        retryCount,
+        model: runArgs.model ?? 'claude-opus-4-7',
+        startedAt,
+        finishedAt,
+        status: 'failure',
+        inputTokens: null,
+        outputTokens: null,
+        cachedInputTokens: null,
+        costUsd: null,
+        promptHash: null,
+        inputPayloadPath,
+        outputPayloadPath: null,
+        errorMessage: (err as Error).message,
+      }),
+    );
+    throw err;
+  }
+
+  const finishedAt = new Date().toISOString();
+  const outputPayloadPath = await safe(() =>
+    uploadPayload({
+      pipelineRunId: ctx.pipelineRunId,
+      agent,
+      retryCount,
+      kind: 'output',
+      data: outputPayloadFor(result),
+    }),
+  );
+
+  await safe(() =>
+    insertAgentRun({
+      pipelineRunId: ctx.pipelineRunId,
+      featurePath: ctx.prdPath,
+      product: ctx.product,
+      agent,
+      retryCount,
+      model: runArgs.model ?? 'claude-opus-4-7',
+      startedAt,
+      finishedAt,
+      status: 'success',
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cachedInputTokens: result.usage.cacheReadInputTokens,
+      costUsd: result.costUsd,
+      promptHash: null,
+      inputPayloadPath,
+      outputPayloadPath,
+      errorMessage: null,
+    }),
+  );
+
+  return result;
+}
+
+async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (err) {
+    log.warn('Recorded-agent side-effect failed (continuing)', {
+      error: (err as Error).message,
+    });
+    return null;
+  }
+}

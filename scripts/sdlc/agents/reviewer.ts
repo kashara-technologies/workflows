@@ -9,7 +9,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent, type RunAgentResult } from '../lib/anthropic.js';
+import { type RunAgentResult } from '../lib/anthropic.js';
+import { runRecordedAgent } from '../lib/recorded-agent.js';
 import {
   computeBuildDiff,
   renderChangedFileTable,
@@ -110,7 +111,8 @@ export async function runReviewer(input: ReviewerInput): Promise<ReviewerOutput>
     'with read_file when you need more context. Apply the decision rules from the system ' +
     'prompt and emit the 04-review.md content as your final assistant message.';
 
-  const result = await runAgent({
+  const result = await runRecordedAgent({
+    recording: { ctx, agent: 'reviewer', retryCount: 0 },
     agentName: 'reviewer',
     system: [{ type: 'text', text: systemPrompt, cacheControl: 'ephemeral' }],
     userBlocks: [

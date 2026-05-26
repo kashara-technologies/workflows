@@ -8,7 +8,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent, type RunAgentResult } from '../lib/anthropic.js';
+import { type RunAgentResult } from '../lib/anthropic.js';
+import { runRecordedAgent } from '../lib/recorded-agent.js';
 import type { AuditLogger } from '../lib/audit.js';
 import { log } from '../lib/logger.js';
 import {
@@ -77,7 +78,8 @@ export async function runTester(input: TesterInput): Promise<TesterOutput> {
     'Run the project checks, walk the acceptance criteria, decide PASS or FAIL, ' +
     'and emit the 03-test-results.md content as your final assistant message.';
 
-  const result = await runAgent({
+  const result = await runRecordedAgent({
+    recording: { ctx, agent: 'tester', retryCount: 0 },
     agentName: 'tester',
     system: [{ type: 'text', text: systemPrompt, cacheControl: 'ephemeral' }],
     userBlocks: [

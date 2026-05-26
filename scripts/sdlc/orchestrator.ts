@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { runCoder } from './agents/coder.js';
 import { runPlanner } from './agents/planner.js';
+import { runReviewer } from './agents/reviewer.js';
 import { runTester } from './agents/tester.js';
 import { OPUS_MODEL_ID } from './lib/anthropic.js';
 import { createAuditLogger } from './lib/audit.js';
@@ -11,13 +12,21 @@ import { getEnv } from './lib/env.js';
 import { commitAndPushBuildBranch, prepareBuildBranch } from './lib/git.js';
 import { assertCanWriteToRepo } from './lib/github-app.js';
 import {
+  convertPrToDraft,
   findOrCreateBuildPr,
   markPrReadyForReview,
   postPrComment,
   setBuildLabel,
+  updatePrBody,
 } from './lib/github-pr.js';
 import { log } from './lib/logger.js';
-import { coderRetryComment, finalComment, milestoneComment } from './lib/pr-comments.js';
+import {
+  buildPrBody,
+  coderRetryComment,
+  finalComment,
+  milestoneComment,
+  type FinalDecision,
+} from './lib/pr-comments.js';
 import { buildRunContext, parsePrdPath } from './lib/run-context.js';
 import { getSupabase } from './lib/supabase.js';
 
@@ -94,15 +103,21 @@ async function main(): Promise<void> {
     branch: ctx.buildBranch,
     baseBranch: 'main',
     feature: ctx.feature,
-    initialBody:
-      `# Build PR for \`${ctx.feature}\`\n\n` +
-      `This PR is managed by the Kashara SDLC orchestrator. It is force-pushed on every PRD update.\n\n` +
-      `Pipeline run \`${ctx.pipelineRunId}\` in progress.`,
+    initialBody: buildPrBody({
+      feature: ctx.feature,
+      product: ctx.product,
+      pipelineRunId: ctx.pipelineRunId,
+      repo: env.GITHUB_REPOSITORY,
+      branch: ctx.buildBranch,
+      artifactDir: artifactsRelDir,
+      decision: 'in_progress',
+    }),
   });
   await setBuildLabel({ prNumber: buildPr.number, label: 'build:planning' });
 
   let pipelineSucceeded = false;
-  let finalDecision: 'pass' | 'fail' | 'unknown' = 'unknown';
+  let terminalDecision: FinalDecision | 'in_progress' = 'in_progress';
+  let reviewerRationale: string | undefined;
   let totalCostUsd = 0;
   let totalTurns = 0;
   let retriesUsed = 0;
@@ -134,6 +149,8 @@ async function main(): Promise<void> {
 
     // --- Coder + Tester retry loop ---
     let lastTestResultsRelPath: string | undefined;
+    let lastSummaryRelPath: string | undefined;
+    let testerPassed = false;
 
     for (let attempt = 0; attempt <= MAX_CODER_RETRIES; attempt++) {
       // Coder.
@@ -145,6 +162,7 @@ async function main(): Promise<void> {
         retryCount: attempt,
       });
       const summaryRelPath = path.relative(ctx.repoPath, coder.summaryPath);
+      lastSummaryRelPath = summaryRelPath;
       totalCostUsd += coder.agentResult.costUsd;
       totalTurns += coder.agentResult.turns;
       log.info('Coder stage complete', {
@@ -198,10 +216,7 @@ async function main(): Promise<void> {
       });
 
       if (tester.decision === 'PASS') {
-        pipelineSucceeded = true;
-        finalDecision = 'pass';
-        // Phase E reviewer will eventually run here; for Phase D we leave the
-        // PR in build:reviewing as the terminal state of a green pipeline.
+        testerPassed = true;
         await setBuildLabel({ prNumber: buildPr.number, label: 'build:reviewing' });
         break;
       }
@@ -211,7 +226,7 @@ async function main(): Promise<void> {
         });
       }
       if (attempt === MAX_CODER_RETRIES) {
-        finalDecision = 'fail';
+        terminalDecision = 'fail';
         log.warn('Tester FAIL on final attempt; pipeline ends with failure', { attempt });
         await setBuildLabel({ prNumber: buildPr.number, label: 'build:failed' });
         await writeCriticalRetryMarker({
@@ -235,6 +250,50 @@ async function main(): Promise<void> {
       await setBuildLabel({ prNumber: buildPr.number, label: 'build:coding' });
       log.info('Tester FAIL; entering coder retry', { nextAttempt: attempt + 1 });
     }
+
+    // --- Reviewer (only when tester passed) ---
+    if (testerPassed && lastSummaryRelPath && lastTestResultsRelPath) {
+      const reviewer = await runReviewer({
+        ctx,
+        planRelPath,
+        summaryRelPath: lastSummaryRelPath,
+        testResultsRelPath: lastTestResultsRelPath,
+      });
+      const reviewRelPath = path.relative(ctx.repoPath, reviewer.reviewPath);
+      totalCostUsd += reviewer.agentResult.costUsd;
+      totalTurns += reviewer.agentResult.turns;
+      log.info('Reviewer stage complete', {
+        reviewPath: reviewer.reviewPath,
+        decision: reviewer.decision,
+        rationale: reviewer.decisionRationale,
+        turns: reviewer.agentResult.turns,
+        costUsd: reviewer.agentResult.costUsd,
+      });
+      await postPrComment({
+        prNumber: buildPr.number,
+        body: milestoneComment({
+          agent: 'reviewer',
+          model: OPUS_MODEL_ID,
+          agentResult: reviewer.agentResult,
+          artifactPath: reviewRelPath,
+          repo: env.GITHUB_REPOSITORY,
+          branch: ctx.buildBranch,
+          tagline: `Decision: **${reviewer.decision}**${reviewer.decisionRationale ? ` , ${reviewer.decisionRationale}` : ''}`,
+        }),
+      });
+
+      reviewerRationale = reviewer.decisionRationale || undefined;
+      if (reviewer.decision === 'APPROVE') {
+        terminalDecision = 'approved';
+        pipelineSucceeded = true;
+        await setBuildLabel({ prNumber: buildPr.number, label: 'build:approved' });
+      } else {
+        // BLOCK or UNKNOWN both end up blocked. UNKNOWN is treated as BLOCK
+        // out of caution; the human must look at 04-review.md to disambiguate.
+        terminalDecision = 'blocked';
+        await setBuildLabel({ prNumber: buildPr.number, label: 'build:blocked' });
+      }
+    }
   } catch (err) {
     log.error('Pipeline stage threw', { error: (err as Error).message, stack: (err as Error).stack });
     try {
@@ -245,8 +304,10 @@ async function main(): Promise<void> {
     throw err;
   } finally {
     // Commit and push whatever the agents wrote, even on partial failure.
+    const decisionLabel =
+      terminalDecision === 'in_progress' ? 'unknown' : terminalDecision;
     const message =
-      `chore(build): ${finalDecision === 'pass' ? 'planner+coder+tester pass' : 'pipeline run, decision=' + finalDecision} for ${ctx.feature}\n\n` +
+      `chore(build): pipeline run, decision=${decisionLabel} for ${ctx.feature}\n\n` +
       `Pipeline run ${ctx.pipelineRunId}.`;
     const pushResult = await commitAndPushBuildBranch({
       repoPath: ctx.repoPath,
@@ -257,41 +318,69 @@ async function main(): Promise<void> {
       branch: pushResult.branch,
       commitSha: pushResult.commitSha,
       committed: pushResult.committed,
-      finalDecision,
+      terminalDecision,
     });
 
+    // Update PR description with final state + reviewer rationale.
     try {
-      await postPrComment({
+      await updatePrBody({
         prNumber: buildPr.number,
-        body: finalComment({
-          decision: finalDecision === 'pass' ? 'pass' : 'fail',
+        body: buildPrBody({
           feature: ctx.feature,
+          product: ctx.product,
+          pipelineRunId: ctx.pipelineRunId,
           repo: env.GITHUB_REPOSITORY,
           branch: ctx.buildBranch,
           artifactDir: artifactsRelDir,
-          commitSha: pushResult.commitSha,
+          decision: terminalDecision,
+          reviewerRationale,
           totalCostUsd,
-          totalTurns,
           retriesUsed,
         }),
       });
     } catch (err) {
-      log.warn('Failed to post final PR comment', { error: (err as Error).message });
+      log.warn('Failed to update PR body', { error: (err as Error).message });
     }
 
-    if (finalDecision === 'pass') {
+    // Final summary comment, only when we reached a terminal state.
+    if (terminalDecision !== 'in_progress') {
       try {
-        await markPrReadyForReview(buildPr.number);
+        await postPrComment({
+          prNumber: buildPr.number,
+          body: finalComment({
+            decision: terminalDecision,
+            feature: ctx.feature,
+            repo: env.GITHUB_REPOSITORY,
+            branch: ctx.buildBranch,
+            artifactDir: artifactsRelDir,
+            commitSha: pushResult.commitSha,
+            totalCostUsd,
+            totalTurns,
+            retriesUsed,
+            reviewerRationale,
+          }),
+        });
       } catch (err) {
-        log.warn('Failed to mark PR ready for review', { error: (err as Error).message });
+        log.warn('Failed to post final PR comment', { error: (err as Error).message });
       }
+    }
+
+    // Draft state transitions.
+    try {
+      if (terminalDecision === 'approved') {
+        await markPrReadyForReview(buildPr.number);
+      } else if (terminalDecision === 'blocked' || terminalDecision === 'fail') {
+        await convertPrToDraft(buildPr.number);
+      }
+    } catch (err) {
+      log.warn('Failed to update PR draft state', { error: (err as Error).message });
     }
   }
 
-  log.info('Phase D pipeline complete.', {
+  log.info('Phase E pipeline complete.', {
     pipelineRunId: ctx.pipelineRunId,
     succeeded: pipelineSucceeded,
-    finalDecision,
+    terminalDecision,
     totalCostUsd,
     totalTurns,
     retriesUsed,

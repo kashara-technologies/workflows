@@ -1,0 +1,44 @@
+name: Failure injection tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  failure-injection:
+    name: Run failure-injection harness
+    runs-on: ubuntu-latest
+    env:
+      # The harness mocks the real failing dependency at the boundary, so
+      # the values below are placeholders that satisfy env validation. No
+      # real Anthropic or App calls happen during the test run; the
+      # Supabase calls hit invalid hosts on purpose and exercise the
+      # warn-and-continue path.
+      ANTHROPIC_API_KEY: fake-anthropic-key-for-failure-injection
+      SUPABASE_URL: https://kashara-failure-injection.invalid
+      SUPABASE_SERVICE_KEY: fake-supabase-key
+      ORCHESTRATOR_APP_ID: '0'
+      ORCHESTRATOR_APP_INSTALLATION_ID: '0'
+      ORCHESTRATOR_APP_PRIVATE_KEY: |
+        -----BEGIN PLACEHOLDER-----
+        not-a-real-key
+        -----END PLACEHOLDER-----
+      TARGET_REPO_PATH: ${{ github.workspace }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run failure-injection harness
+        run: pnpm exec tsx scripts/sdlc/tests/failure-injection.ts

@@ -29,6 +29,12 @@ export interface RecordingMetadata {
 
 export interface RecordedAgentParams extends RunAgentParams {
   recording: RecordingMetadata;
+  /**
+   * Inject an alternative implementation of runAgent. Defaults to the real
+   * Anthropic SDK call. Used by failure-injection tests to simulate API
+   * errors at the right boundary.
+   */
+  runAgentImpl?: (params: RunAgentParams) => Promise<RunAgentResult>;
 }
 
 function inputPayloadFor(params: RunAgentParams): unknown {
@@ -52,7 +58,8 @@ function outputPayloadFor(result: RunAgentResult): unknown {
 }
 
 export async function runRecordedAgent(params: RecordedAgentParams): Promise<RunAgentResult> {
-  const { recording, ...runArgs } = params;
+  const { recording, runAgentImpl, ...runArgs } = params;
+  const runner = runAgentImpl ?? runAgent;
   const { ctx, agent, retryCount } = recording;
   const startedAt = new Date().toISOString();
 
@@ -70,7 +77,7 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
 
   let result: RunAgentResult;
   try {
-    result = await runAgent(runArgs);
+    result = await runner(runArgs);
   } catch (err) {
     const finishedAt = new Date().toISOString();
     await safe(() =>

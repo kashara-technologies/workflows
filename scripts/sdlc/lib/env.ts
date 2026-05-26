@@ -25,6 +25,13 @@ const Env = z.object({
   GITHUB_SHA: z.string().min(1),
   GITHUB_EVENT_NAME: z.string().min(1).optional(),
   GITHUB_REF: z.string().min(1).optional(),
+
+  // Optional opt-in monthly cost kill switch (USD). When set to a positive
+  // number, the orchestrator queries agent_runs at startup and refuses to
+  // start a new pipeline if current calendar month spend is over this value.
+  // GitHub workflows pass empty strings for unset vars, so we accept any
+  // string and validate at use time.
+  SDLC_MONTHLY_KILL_SWITCH_USD: z.string().optional(),
 });
 
 export type EnvVars = z.infer<typeof Env>;

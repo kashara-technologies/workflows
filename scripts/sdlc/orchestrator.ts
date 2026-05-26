@@ -8,6 +8,7 @@ import { runReviewer } from './agents/reviewer.js';
 import { runTester } from './agents/tester.js';
 import { OPUS_MODEL_ID } from './lib/anthropic.js';
 import { createAuditLogger } from './lib/audit.js';
+import { getMonthlyAgentCost } from './lib/budget.js';
 import { getEnv } from './lib/env.js';
 import { commitAndPushBuildBranch, prepareBuildBranch } from './lib/git.js';
 import { assertCanWriteToRepo } from './lib/github-app.js';
@@ -77,6 +78,11 @@ async function main(): Promise<void> {
     log.error('Supabase connection failed', { error: (err as Error).message });
     process.exit(1);
   }
+
+  // Opt-in monthly kill switch. When SDLC_MONTHLY_KILL_SWITCH_USD is set,
+  // check current calendar month spend before doing anything else. Over the
+  // limit: drop a critical marker for the Slack alert step and exit.
+  await checkMonthlyKillSwitch();
 
   // Fail fast if the App can't push the artifacts, before burning Anthropic
   // credit on the agents.
@@ -442,6 +448,57 @@ async function writeCriticalRetryMarker(payload: CriticalRetryMarkerPayload): Pr
     feature: payload.feature,
     pipelineRunId: payload.pipelineRunId,
   });
+}
+
+/**
+ * Opt-in monthly cost circuit breaker. Reads SDLC_MONTHLY_KILL_SWITCH_USD
+ * from env; if unset, no-op. If set and current month spend in agent_runs is
+ * over that value, writes .budget-kill-switch-tripped into $GITHUB_WORKSPACE
+ * so the pipeline workflow routes a critical Slack alert, and exits non-zero
+ * before starting any agent. Running pipelines on other runners are not
+ * affected.
+ */
+async function checkMonthlyKillSwitch(): Promise<void> {
+  const env = getEnv();
+  const raw = env.SDLC_MONTHLY_KILL_SWITCH_USD;
+  if (!raw) {
+    log.info('Monthly kill switch unset; skipping budget check');
+    return;
+  }
+  const cap = Number(raw);
+  if (!Number.isFinite(cap) || cap <= 0) {
+    log.warn('SDLC_MONTHLY_KILL_SWITCH_USD set but not a positive number; ignoring', { raw });
+    return;
+  }
+  const cost = await getMonthlyAgentCost();
+  log.info('Monthly kill switch check', {
+    capUsd: cap,
+    totalCostUsd: cost.totalCostUsd,
+    rowCount: cost.rowCount,
+    startedAtSince: cost.startedAtSince,
+  });
+  if (cost.totalCostUsd < cap) return;
+
+  const { writeFile } = await import('node:fs/promises');
+  const workspace = process.env.GITHUB_WORKSPACE;
+  if (workspace) {
+    const markerPath = path.join(workspace, '.budget-kill-switch-tripped');
+    const payload = {
+      capUsd: cap,
+      totalCostUsd: cost.totalCostUsd,
+      rowCount: cost.rowCount,
+      startedAtSince: cost.startedAtSince,
+      refusedAt: new Date().toISOString(),
+    };
+    await writeFile(markerPath, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+    log.error('Monthly kill switch tripped; refusing to start new run', payload);
+  } else {
+    log.error('Monthly kill switch tripped (no workspace to write marker)', {
+      capUsd: cap,
+      totalCostUsd: cost.totalCostUsd,
+    });
+  }
+  process.exit(2);
 }
 
 main().catch((err) => {

@@ -1,0 +1,68 @@
+name: Anthropic budget cron
+
+on:
+  schedule:
+    # 08:00 UTC every day. Picks the rolling current calendar month each run.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  budget-check:
+    name: Sum monthly agent_runs cost and alert on threshold
+    runs-on: ubuntu-latest
+    outputs:
+      over_threshold: ${{ steps.run.outputs.over_threshold }}
+    env:
+      # Reuse the orchestrator env schema. ANTHROPIC_API_KEY and the App vars
+      # are not used by the script but env validation expects them.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ORCHESTRATOR_APP_ID: ${{ secrets.ORCHESTRATOR_APP_ID }}
+      ORCHESTRATOR_APP_INSTALLATION_ID: ${{ secrets.ORCHESTRATOR_APP_INSTALLATION_ID }}
+      ORCHESTRATOR_APP_PRIVATE_KEY: ${{ secrets.ORCHESTRATOR_APP_PRIVATE_KEY }}
+      TARGET_REPO_PATH: ${{ github.workspace }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run budget cron
+        id: run
+        run: |
+          set -euo pipefail
+          MARKER="${GITHUB_WORKSPACE}/.budget-alert.json"
+          rm -f "$MARKER"
+          pnpm exec tsx scripts/sdlc/cron/budget-alert.ts
+          if [[ -f "$MARKER" ]]; then
+            echo "over_threshold=true" >> "$GITHUB_OUTPUT"
+            cat "$MARKER"
+          else
+            echo "over_threshold=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  notify-over-threshold:
+    name: Post Slack warning when over 80% of the monthly cap
+    needs: budget-check
+    if: needs.budget-check.outputs.over_threshold == 'true'
+    uses: kashara-technologies/workflows/.github/workflows/slack-alert.yml@main
+    with:
+      job_name: Anthropic budget at or above 80%
+      workflow_name: Anthropic budget cron
+      severity: warning
+    secrets:
+      SLACK_WEBHOOK_CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
+      SLACK_WEBHOOK_WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}
+      SLACK_WEBHOOK_INFO: ${{ secrets.SLACK_WEBHOOK_INFO }}

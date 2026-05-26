@@ -92,6 +92,7 @@ jobs:
 
     outputs:
       coder_retries_exhausted: ${{ steps.orchestrator.outputs.coder_retries_exhausted }}
+      budget_kill_switch_tripped: ${{ steps.orchestrator.outputs.budget_kill_switch_tripped }}
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -100,6 +101,10 @@ jobs:
       ORCHESTRATOR_APP_ID: ${{ secrets.ORCHESTRATOR_APP_ID }}
       ORCHESTRATOR_APP_INSTALLATION_ID: ${{ secrets.ORCHESTRATOR_APP_INSTALLATION_ID }}
       ORCHESTRATOR_APP_PRIVATE_KEY: ${{ secrets.ORCHESTRATOR_APP_PRIVATE_KEY }}
+      # Forwarded from caller (e.g. pulse's sdlc.yml). When set, the
+      # orchestrator refuses to start a new run if the current month's
+      # agent_runs.cost_usd is over this value.
+      SDLC_MONTHLY_KILL_SWITCH_USD: ${{ vars.SDLC_MONTHLY_KILL_SWITCH_USD }}
 
     steps:
       - name: Check out caller repo
@@ -147,19 +152,34 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Orchestrator output"
-          # Orchestrator can write coder_retries_exhausted=true to its output marker
-          # file if Phase D detects retry exhaustion. Default: false.
-          MARKER_FILE="${GITHUB_WORKSPACE}/.coder-retries-exhausted"
-          rm -f "$MARKER_FILE"
+          # The orchestrator writes one of these marker files into
+          # $GITHUB_WORKSPACE when a specific failure family fires. The Slack
+          # alert step downstream reads them to pick the routing severity.
+          RETRIES_MARKER="${GITHUB_WORKSPACE}/.coder-retries-exhausted"
+          BUDGET_MARKER="${GITHUB_WORKSPACE}/.budget-kill-switch-tripped"
+          rm -f "$RETRIES_MARKER" "$BUDGET_MARKER"
 
+          # Don't fail the script on a non-zero orchestrator exit; the markers
+          # carry the diagnostic, and we want the marker-export step to run
+          # regardless.
+          set +e
           pnpm orchestrator "${{ needs.detect-prd.outputs.prd_path }}"
+          ORCH_RC=$?
+          set -e
 
-          if [[ -f "$MARKER_FILE" ]]; then
+          if [[ -f "$RETRIES_MARKER" ]]; then
             echo "coder_retries_exhausted=true" >> "$GITHUB_OUTPUT"
           else
             echo "coder_retries_exhausted=false" >> "$GITHUB_OUTPUT"
           fi
+          if [[ -f "$BUDGET_MARKER" ]]; then
+            echo "budget_kill_switch_tripped=true" >> "$GITHUB_OUTPUT"
+            cat "$BUDGET_MARKER"
+          else
+            echo "budget_kill_switch_tripped=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "::endgroup::"
+          exit $ORCH_RC
 
   notify-failure:
     name: Notify Slack on failure
@@ -169,7 +189,7 @@ jobs:
     with:
       job_name: ${{ needs.run-pipeline.result == 'failure' && 'Run SDLC pipeline' || 'Detect changed PRD' }}
       workflow_name: SDLC Pipeline (${{ github.repository }})
-      severity: ${{ needs.run-pipeline.outputs.coder_retries_exhausted == 'true' && 'critical' || 'warning' }}
+      severity: ${{ (needs.run-pipeline.outputs.coder_retries_exhausted == 'true' || needs.run-pipeline.outputs.budget_kill_switch_tripped == 'true') && 'critical' || 'warning' }}
     secrets:
       SLACK_WEBHOOK_CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
       SLACK_WEBHOOK_WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}

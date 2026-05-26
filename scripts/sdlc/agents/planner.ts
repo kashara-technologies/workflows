@@ -7,7 +7,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent, type RunAgentResult } from '../lib/anthropic.js';
+import { type RunAgentResult } from '../lib/anthropic.js';
+import { runRecordedAgent } from '../lib/recorded-agent.js';
 import { log } from '../lib/logger.js';
 import {
   FS_READ_TOOLS,
@@ -54,7 +55,8 @@ export async function runPlanner(ctx: RunContext): Promise<PlannerOutput> {
     'in the structure described in your system prompt. Emit only the Markdown ' +
     'plan as your final assistant message.';
 
-  const result = await runAgent({
+  const result = await runRecordedAgent({
+    recording: { ctx, agent: 'planner', retryCount: 0 },
     agentName: 'planner',
     system: [
       { type: 'text', text: systemPrompt, cacheControl: 'ephemeral' },

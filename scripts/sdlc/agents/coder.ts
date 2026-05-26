@@ -9,7 +9,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAgent, type RunAgentResult } from '../lib/anthropic.js';
+import { type RunAgentResult } from '../lib/anthropic.js';
+import { runRecordedAgent } from '../lib/recorded-agent.js';
 import type { AuditLogger } from '../lib/audit.js';
 import { log } from '../lib/logger.js';
 import {
@@ -98,7 +99,8 @@ export async function runCoder(input: CoderInput): Promise<CoderOutput> {
     { type: 'text' as const, text: closing },
   ];
 
-  const result = await runAgent({
+  const result = await runRecordedAgent({
+    recording: { ctx, agent: 'coder', retryCount },
     agentName: 'coder',
     system: [{ type: 'text', text: systemPrompt, cacheControl: 'ephemeral' }],
     userBlocks,

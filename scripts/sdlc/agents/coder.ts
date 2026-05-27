@@ -115,8 +115,10 @@ export async function runCoder(input: CoderInput): Promise<CoderOutput> {
       throw new Error(`Unknown tool: ${toolName}`);
     },
     maxTokens: 8192,
-    // Coder needs many tool calls (multiple writes + shells per file).
-    maxIterations: 80,
+    // Coder needs many tool calls (multiple writes + shells per file). 80
+    // wasn't enough for the pulse categories run; bump to 120 for headroom
+    // on complex features, same pattern as the planner cap raise.
+    maxIterations: 120,
   });
 
   const summaryMarkdown = stripCodeFences(result.finalText.trim());

@@ -1,0 +1,73 @@
+name: Cost regression cron
+
+on:
+  schedule:
+    # 08:15 UTC every day, 15 minutes after the monthly budget cron.
+    - cron: '15 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  cost-regression-check:
+    name: Detect per-pipeline cost regressions
+    runs-on: ubuntu-latest
+    outputs:
+      out_of_envelope: ${{ steps.run.outputs.out_of_envelope }}
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ORCHESTRATOR_APP_ID: ${{ secrets.ORCHESTRATOR_APP_ID }}
+      ORCHESTRATOR_APP_INSTALLATION_ID: ${{ secrets.ORCHESTRATOR_APP_INSTALLATION_ID }}
+      ORCHESTRATOR_APP_PRIVATE_KEY: ${{ secrets.ORCHESTRATOR_APP_PRIVATE_KEY }}
+      TARGET_REPO_PATH: ${{ github.workspace }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_SHA: ${{ github.sha }}
+      # Envelope from docs/handoffs/phase-g-handoff.md section 1.
+      # Defaults: $0.40 min, $8.00 max, product=pulse, 48 hour recency.
+      # Set as repo/org variables to override without code changes.
+      COST_REGRESSION_MIN_USD: ${{ vars.COST_REGRESSION_MIN_USD }}
+      COST_REGRESSION_MAX_USD: ${{ vars.COST_REGRESSION_MAX_USD }}
+      COST_REGRESSION_PRODUCT: ${{ vars.COST_REGRESSION_PRODUCT }}
+      COST_REGRESSION_RECENCY_HOURS: ${{ vars.COST_REGRESSION_RECENCY_HOURS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run cost regression
+        id: run
+        run: |
+          set -euo pipefail
+          MARKER="${GITHUB_WORKSPACE}/.cost-regression-alert.json"
+          rm -f "$MARKER"
+          pnpm exec tsx scripts/sdlc/cron/cost-regression-alert.ts
+          if [[ -f "$MARKER" ]]; then
+            echo "out_of_envelope=true" >> "$GITHUB_OUTPUT"
+            cat "$MARKER"
+          else
+            echo "out_of_envelope=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  notify-out-of-envelope:
+    name: Post Slack warning when a pipeline run is out of envelope
+    needs: cost-regression-check
+    if: needs.cost-regression-check.outputs.out_of_envelope == 'true'
+    uses: kashara-technologies/workflows/.github/workflows/slack-alert.yml@main
+    with:
+      job_name: Cost regression detected
+      workflow_name: Cost regression cron
+      severity: warning
+    secrets:
+      SLACK_WEBHOOK_CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
+      SLACK_WEBHOOK_WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}
+      SLACK_WEBHOOK_INFO: ${{ secrets.SLACK_WEBHOOK_INFO }}

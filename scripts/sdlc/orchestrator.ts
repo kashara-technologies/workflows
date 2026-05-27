@@ -421,9 +421,80 @@ async function main(): Promise<void> {
     agentCount,
   });
 
+  // Write a human-readable summary to $GITHUB_STEP_SUMMARY so the GH Actions
+  // run page distinguishes "BLOCKED (advisory, PR in draft)" from "crashed"
+  // at a glance. Both exit code 1 today, but the summary makes the cause
+  // obvious without reading logs.
+  await writeStepSummary({
+    terminalDecision,
+    feature: ctx.feature,
+    product: ctx.product,
+    repo: env.GITHUB_REPOSITORY,
+    branch: ctx.buildBranch,
+    pipelineRunId: ctx.pipelineRunId,
+    totalCostUsd,
+    totalTurns,
+    retriesUsed,
+    reviewerRationale,
+  });
+
   if (!pipelineSucceeded) {
     process.exit(1);
   }
+}
+
+interface StepSummaryParams {
+  terminalDecision: FinalDecision | 'in_progress';
+  feature: string;
+  product: string;
+  repo: string;
+  branch: string;
+  pipelineRunId: string;
+  totalCostUsd: number;
+  totalTurns: number;
+  retriesUsed: number;
+  reviewerRationale: string | undefined;
+}
+
+/**
+ * Append a Markdown summary to $GITHUB_STEP_SUMMARY so the GH Actions run
+ * page shows the outcome at a glance. A red run for BLOCK reads identical
+ * to a red run for a crash; this writes "BLOCKED (advisory)" or "CRASHED"
+ * or "APPROVED" into the run summary so the difference is obvious.
+ */
+async function writeStepSummary(params: StepSummaryParams): Promise<void> {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  const { appendFile } = await import('node:fs/promises');
+  const headline = (() => {
+    switch (params.terminalDecision) {
+      case 'approved':
+        return '✅ **APPROVED** , PR is ready for human merge.';
+      case 'blocked':
+        return '⚠️ **BLOCKED by reviewer** (advisory). PR is in draft; read `04-review.md` for the block reason and resolve before merging.';
+      case 'fail':
+        return '❌ **FAILED**, tester could not pass after retries. PR is in draft. Read `03-test-results.md` for the failing checks.';
+      case 'in_progress':
+        return '❓ **Pipeline did not reach a terminal state.** Likely a crash before reviewer ran.';
+    }
+  })();
+  const body = [
+    `## SDLC pipeline result`,
+    ``,
+    headline,
+    ``,
+    `**Feature:** \`${params.feature}\` (${params.product})`,
+    `**Run ID:** \`${params.pipelineRunId}\``,
+    `**Build branch:** [\`${params.branch}\`](https://github.com/${params.repo}/tree/${params.branch})`,
+    `**Cost:** $${params.totalCostUsd.toFixed(2)} across ${params.totalTurns} turns, ${params.retriesUsed} retr${params.retriesUsed === 1 ? 'y' : 'ies'}`,
+    params.reviewerRationale ? `\n**Reviewer note:** ${params.reviewerRationale}` : '',
+    ``,
+    `> Tip: a red status on a BLOCKED run is expected. The reviewer found something worth a second look; check \`04-review.md\` and the PR before re-running.`,
+    ``,
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
+  await appendFile(summaryPath, body, 'utf-8');
 }
 
 async function writeRunJson(ctx: ReturnType<typeof buildRunContext>): Promise<void> {

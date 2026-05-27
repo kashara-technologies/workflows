@@ -107,6 +107,10 @@ export async function commitAndPushBuildBranch(
   const { repoPath, branch, message, pathspec } = params;
 
   if (pathspec && pathspec.length > 0) {
+    // Reset the index first so anything pre-staged earlier in the pipeline
+    // (e.g. `computeBuildDiff` does `git add -A` before the reviewer to build
+    // its diff) doesn't sneak into our partial commit.
+    await runGit(['reset'], repoPath);
     await runGit(['add', '--', ...pathspec], repoPath);
   } else {
     await runGit(['add', '-A'], repoPath);

@@ -16,6 +16,8 @@ export interface RunContext {
   feature: string;
   /** Git SHA of the PRD at the start of the run. */
   prdSha: string;
+  /** SHA-256 of the PRD file content (not the commit). Used for idempotency skip checks. */
+  prdContentSha: string;
   /** Git SHA of the repo state at the start of the run. */
   repoSha: string;
   /** Repo on GitHub (org/name format). */

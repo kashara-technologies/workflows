@@ -66,6 +66,7 @@ function fakeCtx(): RunContext {
     product: 'pulse',
     feature: '__failure_injection__',
     prdSha: 'deadbeef',
+    prdContentSha: 'd' + '0'.repeat(63),
     repoSha: 'deadbeef',
     repo: 'kashara-technologies/pulse',
     repoPath: tmpdir(),

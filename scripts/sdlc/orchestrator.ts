@@ -13,6 +13,7 @@ import { getEnv } from './lib/env.js';
 import { emitPipelineRunCompleted, shutdownPostHog } from './lib/posthog.js';
 import { commitAndPushBuildBranch, prepareBuildBranch } from './lib/git.js';
 import { assertCanWriteToRepo } from './lib/github-app.js';
+import { checkIdempotency } from './lib/idempotency.js';
 import {
   convertPrToDraft,
   findOrCreateBuildPr,
@@ -88,6 +89,32 @@ async function main(): Promise<void> {
   // Fail fast if the App can't push the artifacts, before burning Anthropic
   // credit on the agents.
   await assertCanWriteToRepo(env.GITHUB_REPOSITORY);
+
+  // Idempotency: if the same PRD content was already approved on this build
+  // branch, skip the full pipeline. Saves the ~$12 cost of re-running a
+  // duplicate trigger. Bypass with SDLC_FORCE_RERUN=1.
+  const idempotency = await checkIdempotency({
+    feature: ctx.feature,
+    buildBranch: ctx.buildBranch,
+    prdContentSha: ctx.prdContentSha,
+  });
+  if (idempotency.shouldSkip) {
+    log.info('Skipping pipeline (idempotent)', {
+      feature: ctx.feature,
+      prdContentSha: ctx.prdContentSha,
+      reason: idempotency.reason,
+    });
+    await writeIdempotentSkipSummary({
+      feature: ctx.feature,
+      product: ctx.product,
+      branch: ctx.buildBranch,
+      repo: env.GITHUB_REPOSITORY,
+      reason: idempotency.reason,
+      previousShippedAt: idempotency.previous?.shippedAt ?? null,
+    });
+    return;
+  }
+  log.info('Idempotency check: proceeding', { reason: idempotency.reason });
 
   // Set up the build branch fresh from main. Every artifact and code file the
   // agents produce lands on top of this branch.
@@ -316,6 +343,20 @@ async function main(): Promise<void> {
     }
     throw err;
   } finally {
+    // Refresh run.json with the terminal decision + shipped_at before the
+    // final commit so the next pipeline run can read it for the idempotency
+    // check.
+    try {
+      await writeRunJson(ctx, {
+        decision: terminalDecision,
+        shippedAt: terminalDecision === 'approved' ? new Date().toISOString() : undefined,
+      });
+    } catch (err) {
+      log.warn('Failed to refresh run.json with terminal decision', {
+        error: (err as Error).message,
+      });
+    }
+
     // Commit and push whatever the agents wrote, even on partial failure.
     const decisionLabel =
       terminalDecision === 'in_progress' ? 'unknown' : terminalDecision;
@@ -497,25 +538,69 @@ async function writeStepSummary(params: StepSummaryParams): Promise<void> {
   await appendFile(summaryPath, body, 'utf-8');
 }
 
-async function writeRunJson(ctx: ReturnType<typeof buildRunContext>): Promise<void> {
+interface WriteRunJsonExtras {
+  /** Terminal pipeline outcome. Used by the idempotency check on the next run. */
+  decision?: FinalDecision | 'in_progress';
+  /** ISO timestamp when the terminal decision was reached. */
+  shippedAt?: string;
+}
+
+async function writeRunJson(
+  ctx: ReturnType<typeof buildRunContext>,
+  extras: WriteRunJsonExtras = {},
+): Promise<void> {
   const { mkdir, writeFile } = await import('node:fs/promises');
   await mkdir(ctx.artifactsPath, { recursive: true });
-  const body = {
+  const body: Record<string, unknown> = {
     run_id: ctx.pipelineRunId,
     feature: ctx.feature,
     product: ctx.product,
     prd_path: ctx.prdPath,
     prd_sha: ctx.prdSha,
+    prd_content_sha: ctx.prdContentSha,
     repo: ctx.repo,
     repo_sha: ctx.repoSha,
     build_branch: ctx.buildBranch,
     started_at: ctx.startedAt,
+    decision: extras.decision ?? 'in_progress',
   };
+  if (extras.shippedAt) body.shipped_at = extras.shippedAt;
   await writeFile(
     path.join(ctx.artifactsPath, 'run.json'),
     JSON.stringify(body, null, 2) + '\n',
     'utf-8',
   );
+}
+
+interface IdempotentSkipSummaryParams {
+  feature: string;
+  product: string;
+  repo: string;
+  branch: string;
+  reason: string;
+  previousShippedAt: string | null;
+}
+
+async function writeIdempotentSkipSummary(params: IdempotentSkipSummaryParams): Promise<void> {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  const { appendFile } = await import('node:fs/promises');
+  const body = [
+    `## SDLC pipeline result`,
+    ``,
+    `⏭️ **Skipped (idempotent).** Same PRD content was already approved on this build branch.`,
+    ``,
+    `**Feature:** \`${params.feature}\` (${params.product})`,
+    `**Build branch:** [\`${params.branch}\`](https://github.com/${params.repo}/tree/${params.branch})`,
+    `**Reason:** ${params.reason}`,
+    params.previousShippedAt ? `**Previous APPROVED at:** ${params.previousShippedAt}` : '',
+    ``,
+    `Set the repo variable \`SDLC_FORCE_RERUN\` to \`1\` (or env var of the same name) to bypass this check on the next run.`,
+    ``,
+  ]
+    .filter((l) => l !== '')
+    .join('\n');
+  await appendFile(summaryPath, body, 'utf-8');
 }
 
 interface CriticalRetryMarkerPayload {

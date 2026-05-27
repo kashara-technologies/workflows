@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { RunContext } from '../types.js';
 import { getEnv } from './env.js';
@@ -28,6 +29,8 @@ export function buildRunContext(prdPath: string): RunContext {
 
   const repoSha = env.GITHUB_SHA;
   const artifactsPath = path.join(repoPath, '.kashara', 'build', feature);
+  const prdContent = readFileSync(path.join(repoPath, prdPath), 'utf-8');
+  const prdContentSha = createHash('sha256').update(prdContent).digest('hex');
 
   return {
     pipelineRunId: randomUUID(),
@@ -35,6 +38,7 @@ export function buildRunContext(prdPath: string): RunContext {
     product,
     feature,
     prdSha,
+    prdContentSha,
     repoSha,
     repo: env.GITHUB_REPOSITORY,
     repoPath,

@@ -23,6 +23,7 @@ import {
   updatePrBody,
 } from './lib/github-pr.js';
 import { log } from './lib/logger.js';
+import { assertNoPnpmWorkspacePlaceholders } from './lib/pnpm-workspace-guard.js';
 import {
   buildPrBody,
   coderRetryComment,
@@ -189,6 +190,8 @@ async function main(): Promise<void> {
     let lastSummaryRelPath: string | undefined;
     let testerPassed = false;
 
+    assertNoPnpmWorkspacePlaceholders(ctx.repoPath, 'preflight');
+
     for (let attempt = 0; attempt <= MAX_CODER_RETRIES; attempt++) {
       // Coder.
       const coder = await runCoder({
@@ -198,6 +201,7 @@ async function main(): Promise<void> {
         previousTestResultsRelPath: lastTestResultsRelPath,
         retryCount: attempt,
       });
+      assertNoPnpmWorkspacePlaceholders(ctx.repoPath, 'post-coder');
       const summaryRelPath = path.relative(ctx.repoPath, coder.summaryPath);
       lastSummaryRelPath = summaryRelPath;
       totalCostUsd += coder.agentResult.costUsd;
@@ -357,7 +361,12 @@ async function main(): Promise<void> {
       });
     }
 
-    // Commit and push whatever the agents wrote, even on partial failure.
+    // Commit and push whatever the agents wrote. On a clean terminal
+    // decision, push everything. On crash (`terminalDecision` still
+    // `in_progress`), push only `.kashara/` so the audit log + plan land
+    // for debugging without poisoning downstream CI with half-finished
+    // workspace mutations (e.g. a coder that exhausted iterations mid-edit,
+    // or a `pnpm install` that auto-wrote placeholder entries).
     const decisionLabel =
       terminalDecision === 'in_progress' ? 'unknown' : terminalDecision;
     const message =
@@ -367,6 +376,7 @@ async function main(): Promise<void> {
       repoPath: ctx.repoPath,
       branch: ctx.buildBranch,
       message,
+      pathspec: terminalDecision === 'in_progress' ? ['.kashara'] : undefined,
     });
     log.info('Build branch pushed', {
       branch: pushResult.branch,

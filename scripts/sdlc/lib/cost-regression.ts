@@ -18,7 +18,11 @@ import { log } from './logger.js';
 import { getSupabase } from './supabase.js';
 
 export const DEFAULT_MIN_USD = 0.4;
-export const DEFAULT_MAX_USD = 8.0;
+// Raised from 8.0 after the first production auth run came in at $12 (one
+// retry) and $20 (blocked-review path). Median per-feature run is closer to
+// $12 to $14; $15 catches 2x-spike regressions without alerting on every
+// normal feature build.
+export const DEFAULT_MAX_USD = 15.0;
 export const DEFAULT_PRODUCT = 'pulse';
 /** Look back this many hours when picking the "most recent" pipeline run. */
 export const DEFAULT_RECENCY_HOURS = 48;

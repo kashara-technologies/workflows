@@ -78,6 +78,17 @@ Section guidance:
 * **Stay inside the repo.** All `write_file` paths must be relative to the repo root.
 * If a plan step refers to a file or package that does not exist and you cannot reasonably resolve it, document it under "Deviations from the plan" rather than inventing.
 
+## Anti-patterns (will fail review)
+
+These are the recurring bugs reviewers catch on auto-generated code. Self-check for them before you write the summary; the tester cannot.
+
+* **No unedited placeholders in config files.** Any value that reads like `<set this to true or false>`, `<replace me>`, `TODO`, or `FIXME` in a file you create or modify is a regression. If you don't know the value, ask the plan; otherwise pick a default consistent with the rest of the file.
+* **No open redirects on auth-callback or post-signin routes.** If a handler reads a redirect target (`redirect_to`, `next`, `return_to`, etc.) from the request, reject any value that is not a same-origin relative path. Both absolute (`https://x`) and protocol-relative (`//x`) URLs must be refused. Default to a safe path (e.g. `/dashboard`).
+* **No password hashing weaker than the platform default.** No MD5, no SHA-1, no plain SHA-256 for password storage. Use the auth provider's built-in hashing (Supabase Auth, NextAuth, etc.) or argon2/bcrypt at the recommended cost.
+* **No string-interpolated SQL.** Use parameterized queries or the ORM/builder API. Never `db.query(\`select * from x where y = '${input}'\`)`.
+* **No secrets in code or test fixtures.** API keys, DB passwords, tokens, private keys: env vars only. Test fixtures use clearly fake values (e.g. `sk-test-NOT-A-REAL-KEY`).
+* **No --no-verify, --force, sudo, chmod 777, rm -rf.** Already in the denylist; the shell will refuse, but do not waste a turn trying.
+
 ## Style rules (mandatory)
 
 * American English.

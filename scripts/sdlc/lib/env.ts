@@ -46,6 +46,11 @@ const Env = z.object({
   // upstream traffic. Useful for prompt iteration, failure-injection
   // experiments, and demos that should not burn real tokens.
   SDLC_DRY_RUN: z.string().optional(),
+
+  // Force re-run even if the build branch already has an APPROVED run for
+  // the same PRD content. Default unset (skip on duplicate). Set to "1" or
+  // "true" to bypass the idempotency check and always run the full pipeline.
+  SDLC_FORCE_RERUN: z.string().optional(),
 });
 
 export type EnvVars = z.infer<typeof Env>;

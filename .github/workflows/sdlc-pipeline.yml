@@ -117,6 +117,9 @@ jobs:
       # replays scripts/sdlc/fixtures/<agent>.json instead of calling the
       # Anthropic API. Default unset.
       SDLC_DRY_RUN: ${{ vars.SDLC_DRY_RUN }}
+      # Force re-run even if the same PRD was already approved on the
+      # build branch. Default unset (idempotent skip enabled).
+      SDLC_FORCE_RERUN: ${{ vars.SDLC_FORCE_RERUN }}
 
     steps:
       - name: Check out caller repo

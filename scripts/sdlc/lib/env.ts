@@ -32,6 +32,12 @@ const Env = z.object({
   // GitHub workflows pass empty strings for unset vars, so we accept any
   // string and validate at use time.
   SDLC_MONTHLY_KILL_SWITCH_USD: z.string().optional(),
+
+  // Optional PostHog credentials. Both must be set for events to emit;
+  // either one missing is treated as "telemetry disabled" and the pipeline
+  // proceeds normally. EU instance per the Frankfurt residency posture.
+  POSTHOG_KEY: z.string().optional(),
+  POSTHOG_HOST: z.string().optional(),
 });
 
 export type EnvVars = z.infer<typeof Env>;

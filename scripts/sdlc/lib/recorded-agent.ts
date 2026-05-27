@@ -16,6 +16,7 @@
 import { runAgent, type RunAgentParams, type RunAgentResult } from './anthropic.js';
 import { insertAgentRun } from './agent-runs.js';
 import { uploadPayload } from './payload-storage.js';
+import { emitAgentRunCompleted } from './posthog.js';
 import { log } from './logger.js';
 import type { AgentName } from '../types.js';
 import type { RunContext } from '../types.js';
@@ -55,6 +56,8 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
   const { recording, ...runArgs } = params;
   const { ctx, agent, retryCount } = recording;
   const startedAt = new Date().toISOString();
+  const startedAtMs = Date.now();
+  const model = runArgs.model ?? 'claude-opus-4-7';
 
   // Best-effort input payload upload before the call. Failure logs a warning;
   // we still proceed with the agent.
@@ -73,6 +76,7 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
     result = await runAgent(runArgs);
   } catch (err) {
     const finishedAt = new Date().toISOString();
+    const durationMs = Date.now() - startedAtMs;
     await safe(() =>
       insertAgentRun({
         pipelineRunId: ctx.pipelineRunId,
@@ -80,7 +84,7 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
         product: ctx.product,
         agent,
         retryCount,
-        model: runArgs.model ?? 'claude-opus-4-7',
+        model,
         startedAt,
         finishedAt,
         status: 'failure',
@@ -94,10 +98,22 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
         errorMessage: (err as Error).message,
       }),
     );
+    emitAgentRunCompleted({
+      pipelineRunId: ctx.pipelineRunId,
+      agent,
+      product: ctx.product,
+      feature: ctx.feature,
+      model,
+      status: 'failure',
+      durationMs,
+      costUsd: null,
+      retryCount,
+    });
     throw err;
   }
 
   const finishedAt = new Date().toISOString();
+  const durationMs = Date.now() - startedAtMs;
   const outputPayloadPath = await safe(() =>
     uploadPayload({
       pipelineRunId: ctx.pipelineRunId,
@@ -115,7 +131,7 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
       product: ctx.product,
       agent,
       retryCount,
-      model: runArgs.model ?? 'claude-opus-4-7',
+      model,
       startedAt,
       finishedAt,
       status: 'success',
@@ -129,6 +145,18 @@ export async function runRecordedAgent(params: RecordedAgentParams): Promise<Run
       errorMessage: null,
     }),
   );
+
+  emitAgentRunCompleted({
+    pipelineRunId: ctx.pipelineRunId,
+    agent,
+    product: ctx.product,
+    feature: ctx.feature,
+    model,
+    status: 'success',
+    durationMs,
+    costUsd: result.costUsd,
+    retryCount,
+  });
 
   return result;
 }

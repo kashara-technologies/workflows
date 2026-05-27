@@ -17,6 +17,7 @@
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.0",
     "@supabase/supabase-js": "^2.49.0",
+    "posthog-node": "^5.35.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

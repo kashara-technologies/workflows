@@ -10,6 +10,7 @@ import { OPUS_MODEL_ID } from './lib/anthropic.js';
 import { createAuditLogger } from './lib/audit.js';
 import { getMonthlyAgentCost } from './lib/budget.js';
 import { getEnv } from './lib/env.js';
+import { emitPipelineRunCompleted, shutdownPostHog } from './lib/posthog.js';
 import { commitAndPushBuildBranch, prepareBuildBranch } from './lib/git.js';
 import { assertCanWriteToRepo } from './lib/github-app.js';
 import {
@@ -127,12 +128,15 @@ async function main(): Promise<void> {
   let totalCostUsd = 0;
   let totalTurns = 0;
   let retriesUsed = 0;
+  let agentCount = 0;
+  const pipelineStartedAtMs = Date.now();
 
   try {
     // --- Planner ---
     const planner = await runPlanner(ctx);
     totalCostUsd += planner.agentResult.costUsd;
     totalTurns += planner.agentResult.turns;
+    agentCount += 1;
     log.info('Planner stage complete', {
       planPath: planner.planPath,
       turns: planner.agentResult.turns,
@@ -171,6 +175,7 @@ async function main(): Promise<void> {
       lastSummaryRelPath = summaryRelPath;
       totalCostUsd += coder.agentResult.costUsd;
       totalTurns += coder.agentResult.turns;
+      agentCount += 1;
       log.info('Coder stage complete', {
         attempt,
         summaryPath: coder.summaryPath,
@@ -201,6 +206,7 @@ async function main(): Promise<void> {
       lastTestResultsRelPath = path.relative(ctx.repoPath, tester.testResultsPath);
       totalCostUsd += tester.agentResult.costUsd;
       totalTurns += tester.agentResult.turns;
+      agentCount += 1;
       log.info('Tester stage complete', {
         attempt,
         testResultsPath: tester.testResultsPath,
@@ -268,6 +274,7 @@ async function main(): Promise<void> {
       const reviewRelPath = path.relative(ctx.repoPath, reviewer.reviewPath);
       totalCostUsd += reviewer.agentResult.costUsd;
       totalTurns += reviewer.agentResult.turns;
+      agentCount += 1;
       log.info('Reviewer stage complete', {
         reviewPath: reviewer.reviewPath,
         decision: reviewer.decision,
@@ -381,15 +388,37 @@ async function main(): Promise<void> {
     } catch (err) {
       log.warn('Failed to update PR draft state', { error: (err as Error).message });
     }
+
+    // PostHog summary event for the whole pipeline run, then flush the queue
+    // so events are delivered before the runner terminates.
+    if (terminalDecision !== 'in_progress') {
+      emitPipelineRunCompleted({
+        pipelineRunId: ctx.pipelineRunId,
+        product: ctx.product,
+        feature: ctx.feature,
+        outcome:
+          terminalDecision === 'approved'
+            ? 'approved'
+            : terminalDecision === 'blocked'
+              ? 'blocked'
+              : 'failed',
+        totalCostUsd,
+        totalDurationMs: Date.now() - pipelineStartedAtMs,
+        agentCount,
+        retriesUsed,
+      });
+    }
+    await shutdownPostHog();
   }
 
-  log.info('Phase E pipeline complete.', {
+  log.info('Phase F pipeline complete.', {
     pipelineRunId: ctx.pipelineRunId,
     succeeded: pipelineSucceeded,
     terminalDecision,
     totalCostUsd,
     totalTurns,
     retriesUsed,
+    agentCount,
   });
 
   if (!pipelineSucceeded) {

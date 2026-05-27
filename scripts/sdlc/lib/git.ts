@@ -80,6 +80,12 @@ export interface CommitAndPushBuildBranchParams {
   repoPath: string;
   branch: string;
   message: string;
+  /**
+   * If set, only these pathspecs are staged (instead of `git add -A`).
+   * Used on crash to push the audit log + plan without committing
+   * half-finished workspace mutations that could break downstream CI.
+   */
+  pathspec?: string[];
 }
 
 export interface CommitAndPushResult {
@@ -98,14 +104,23 @@ export async function commitAndPushBuildBranch(
   params: CommitAndPushBuildBranchParams,
 ): Promise<CommitAndPushResult> {
   const env = getEnv();
-  const { repoPath, branch, message } = params;
+  const { repoPath, branch, message, pathspec } = params;
 
-  await runGit(['add', '-A'], repoPath);
+  if (pathspec && pathspec.length > 0) {
+    await runGit(['add', '--', ...pathspec], repoPath);
+  } else {
+    await runGit(['add', '-A'], repoPath);
+  }
 
-  const status = await runGit(['status', '--porcelain'], repoPath);
+  const status = await runGit(
+    pathspec && pathspec.length > 0
+      ? ['status', '--porcelain', '--', ...pathspec]
+      : ['status', '--porcelain'],
+    repoPath,
+  );
   let committed = false;
   if (!status) {
-    log.info('No changes to commit on build branch', { branch });
+    log.info('No changes to commit on build branch', { branch, pathspec });
   } else {
     await runGit(['commit', '-m', message], repoPath);
     committed = true;

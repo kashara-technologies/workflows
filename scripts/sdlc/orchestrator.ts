@@ -361,7 +361,12 @@ async function main(): Promise<void> {
       });
     }
 
-    // Commit and push whatever the agents wrote, even on partial failure.
+    // Commit and push whatever the agents wrote. On a clean terminal
+    // decision, push everything. On crash (`terminalDecision` still
+    // `in_progress`), push only `.kashara/` so the audit log + plan land
+    // for debugging without poisoning downstream CI with half-finished
+    // workspace mutations (e.g. a coder that exhausted iterations mid-edit,
+    // or a `pnpm install` that auto-wrote placeholder entries).
     const decisionLabel =
       terminalDecision === 'in_progress' ? 'unknown' : terminalDecision;
     const message =
@@ -371,6 +376,7 @@ async function main(): Promise<void> {
       repoPath: ctx.repoPath,
       branch: ctx.buildBranch,
       message,
+      pathspec: terminalDecision === 'in_progress' ? ['.kashara'] : undefined,
     });
     log.info('Build branch pushed', {
       branch: pushResult.branch,

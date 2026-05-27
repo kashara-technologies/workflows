@@ -113,6 +113,10 @@ jobs:
       # Either missing -> telemetry disabled, pipeline still runs.
       POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
       POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+      # Dry-run mode. When SDLC_DRY_RUN is "1" or "true" the orchestrator
+      # replays scripts/sdlc/fixtures/<agent>.json instead of calling the
+      # Anthropic API. Default unset.
+      SDLC_DRY_RUN: ${{ vars.SDLC_DRY_RUN }}
 
     steps:
       - name: Check out caller repo

@@ -23,6 +23,7 @@ import {
   updatePrBody,
 } from './lib/github-pr.js';
 import { log } from './lib/logger.js';
+import { assertNoPnpmWorkspacePlaceholders } from './lib/pnpm-workspace-guard.js';
 import {
   buildPrBody,
   coderRetryComment,
@@ -189,6 +190,8 @@ async function main(): Promise<void> {
     let lastSummaryRelPath: string | undefined;
     let testerPassed = false;
 
+    assertNoPnpmWorkspacePlaceholders(ctx.repoPath, 'preflight');
+
     for (let attempt = 0; attempt <= MAX_CODER_RETRIES; attempt++) {
       // Coder.
       const coder = await runCoder({
@@ -198,6 +201,7 @@ async function main(): Promise<void> {
         previousTestResultsRelPath: lastTestResultsRelPath,
         retryCount: attempt,
       });
+      assertNoPnpmWorkspacePlaceholders(ctx.repoPath, 'post-coder');
       const summaryRelPath = path.relative(ctx.repoPath, coder.summaryPath);
       lastSummaryRelPath = summaryRelPath;
       totalCostUsd += coder.agentResult.costUsd;

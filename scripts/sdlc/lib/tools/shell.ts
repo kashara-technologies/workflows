@@ -20,7 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // scripts/sdlc/lib/tools/shell.ts -> ../../../../config/denylist.txt
 const DENYLIST_PATH = path.resolve(__dirname, '..', '..', '..', '..', 'config', 'denylist.txt');
 
-const SHELL_TIMEOUT_MS = 5 * 60 * 1000;
+/** Default per-shell-call timeout. Overridable per-sandbox for tests. */
+export const DEFAULT_SHELL_TIMEOUT_MS = 5 * 60 * 1000;
 const STDOUT_BYTES_RETURNED = 16_000;
 const STDERR_BYTES_RETURNED = 8_000;
 
@@ -66,7 +67,12 @@ function truncate(buf: Buffer, maxBytes: number): { text: string; truncated: boo
   return { text: buf.subarray(0, maxBytes).toString('utf-8'), truncated: true };
 }
 
-function runProcess(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<ShellRunResult> {
+function runProcess(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<ShellRunResult> {
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn('bash', ['-lc', command], { cwd, env });
@@ -77,7 +83,7 @@ function runProcess(command: string, cwd: string, env: NodeJS.ProcessEnv): Promi
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
-    }, SHELL_TIMEOUT_MS);
+    }, timeoutMs);
 
     child.stdout.on('data', (d: Buffer) => stdoutChunks.push(d));
     child.stderr.on('data', (d: Buffer) => stderrChunks.push(d));
@@ -108,6 +114,7 @@ export interface ShellSandbox {
   readonly denylist: Denylist;
   readonly audit: AuditLogger;
   readonly agent: AgentName;
+  readonly timeoutMs: number;
 }
 
 export interface CreateShellSandboxParams {
@@ -115,6 +122,8 @@ export interface CreateShellSandboxParams {
   audit: AuditLogger;
   agent: AgentName;
   denylist?: Denylist;
+  /** Override the per-command wall-clock timeout. Defaults to 5 minutes. */
+  timeoutMs?: number;
 }
 
 export async function createShellSandbox(params: CreateShellSandboxParams): Promise<ShellSandbox> {
@@ -124,6 +133,7 @@ export async function createShellSandbox(params: CreateShellSandboxParams): Prom
     denylist,
     audit: params.audit,
     agent: params.agent,
+    timeoutMs: params.timeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS,
   };
 }
 
@@ -179,13 +189,18 @@ export async function dispatchShellTool(
     });
   }
 
-  const result = await runProcess(command, sandbox.repoPath, {
-    ...process.env,
-    // Force non-interactive package managers to avoid hanging on prompts.
-    CI: '1',
-    FORCE_COLOR: '0',
-    PNPM_DIR: process.env.PNPM_DIR ?? '/home/runner/setup-pnpm',
-  });
+  const result = await runProcess(
+    command,
+    sandbox.repoPath,
+    {
+      ...process.env,
+      // Force non-interactive package managers to avoid hanging on prompts.
+      CI: '1',
+      FORCE_COLOR: '0',
+      PNPM_DIR: process.env.PNPM_DIR ?? '/home/runner/setup-pnpm',
+    },
+    sandbox.timeoutMs,
+  );
 
   await sandbox.audit.recordShell({
     agent: sandbox.agent,

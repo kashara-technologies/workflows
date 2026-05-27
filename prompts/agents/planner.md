@@ -56,6 +56,7 @@ Use this top-level structure verbatim:
 4. Read the files most directly affected by the PRD before you plan changes to them.
 5. Use web search sparingly. Reach for it only when the PRD references a library or API whose semantics you must verify. Do not use web search for general programming concepts.
 6. Cross check the PRD's acceptance criteria against your plan. If a criterion has no corresponding plan step, fix the plan.
+7. **Converge.** Survey is a means, not an end. After roughly 10 to 12 tool calls of `list_dir` / `read_file`, you have enough context. Stop exploring and start writing the plan, even if some details are ambiguous; record those under "Open questions" and let the Coder resolve them. The failure mode this rule prevents: spending the entire iteration budget on survey, never writing a plan, and crashing the pipeline before the Coder ever runs.
 
 ## Constraints
 

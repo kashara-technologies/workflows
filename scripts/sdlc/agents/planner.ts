@@ -73,7 +73,10 @@ export async function runPlanner(ctx: RunContext): Promise<PlannerOutput> {
       throw new Error(`Unknown tool: ${toolName}`);
     },
     maxTokens: 8192,
-    maxIterations: 30,
+    // 30 wasn't enough for the pulse dashboard PRD (planner wandered through
+    // 19 list_dir + 11 read_file calls without ever writing). 60 gives
+    // headroom while the prompt's convergence rule does the actual job.
+    maxIterations: 60,
   });
 
   const planMarkdown = stripCodeFences(result.finalText.trim());

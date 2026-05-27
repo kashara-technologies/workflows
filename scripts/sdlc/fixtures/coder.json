@@ -1,0 +1,11 @@
+{
+  "finalText": "# Summary: dry-run\n\n## What was built\nNothing. This is the coder dry-run fixture. The plan said no scope, the coder followed the plan.\n\n## Files created\nNone.\n\n## Files modified\nNone.\n\n## Dependencies added\nNone.\n\n## Deviations from the plan\nNone.\n\n## Known limitations\nNone. This fixture is a placeholder for SDLC_DRY_RUN=1 mode and intentionally does no work.\n\n## Verification steps run\nNone. Tester fixture verifies separately.",
+  "turns": 1,
+  "usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "costUsd": 0
+}

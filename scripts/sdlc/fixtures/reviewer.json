@@ -1,0 +1,11 @@
+{
+  "finalText": "# Review: dry-run\n\n## Decision\n\nAPPROVE\n\nDry-run fixture. Approving so the orchestrator's APPROVE branch (ready-for-review, build:approved label, draft-to-ready transition) is exercised end to end.\n\n## Acceptance criteria check\nNo acceptance criteria. Plan, summary, and test results all explicitly declare dry-run.\n\n## Blocking concerns\nNone.\n\n## Suggestions\nNone.\n\n## Code quality notes\nNo code changed; only artifact files.\n\n## Security notes\nNone applicable to a dry-run.\n\n## Test coverage notes\nNo tests are expected in dry-run mode.\n\n## Brand consistency\nThe fixtures were authored by a human; they conform to the no-em-dash, no-en-dash, sentence-case rules.",
+  "turns": 1,
+  "usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "costUsd": 0
+}

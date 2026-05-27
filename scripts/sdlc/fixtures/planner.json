@@ -1,0 +1,11 @@
+{
+  "finalText": "# Plan: dry-run\n\n## Summary\nThis plan is the canned dry-run fixture for the Kashara SDLC pipeline. It exists so the orchestrator can be exercised end to end without calling the Anthropic API. The pipeline should produce the expected five artifacts and the PR should land in the approved state.\n\n## Acceptance criteria mapping\nNo acceptance criteria; dry-run mode replays cached responses and asserts the rest of the orchestrator works.\n\n## Files to create\nNone. Coder fixture writes nothing.\n\n## Files to modify\nNone.\n\n## New dependencies\nNone.\n\n## Test strategy\nNo new tests. Tester fixture returns PASS with zero checks.\n\n## Risks\n1. Dry-run mode is invoked against a real PRD by accident, masking actual planner behavior. Mitigation: SDLC_DRY_RUN=1 must be explicitly set; default is unset.\n\n## Out of scope\nEverything. This is a fixture, not a real plan.\n\n## Open questions\nNone.",
+  "turns": 1,
+  "usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "costUsd": 0
+}

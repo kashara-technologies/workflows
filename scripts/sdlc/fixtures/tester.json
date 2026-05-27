@@ -1,0 +1,11 @@
+{
+  "finalText": "# Test results: dry-run\n\n## Decision\n\nPASS\n\nDry-run mode. No real checks executed; the fixture asserts the orchestrator's PASS branch.\n\n## Checks run\n- (dry-run) pnpm install --frozen-lockfile: skipped\n- (dry-run) pnpm exec tsc --noEmit: skipped\n- (dry-run) pnpm test: skipped\n- (dry-run) pnpm build: skipped\n- (dry-run) pnpm lint: skipped\n\n## Acceptance criteria verification\nNo acceptance criteria in the dry-run PRD; the plan and summary fixtures both declare no scope.\n\n## Failures\nNone.\n\n## Fix request\nNone.\n\n## Notes\nThis result is a fixture loaded because SDLC_DRY_RUN=1 is set. Do not interpret PASS here as evidence about real code.",
+  "turns": 1,
+  "usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "costUsd": 0
+}

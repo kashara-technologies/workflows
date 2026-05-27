@@ -15,6 +15,7 @@
 
 import { runAgent, type RunAgentParams, type RunAgentResult } from './anthropic.js';
 import { insertAgentRun } from './agent-runs.js';
+import { isDryRun, loadDryRunResult } from './dry-run.js';
 import { uploadPayload } from './payload-storage.js';
 import { emitAgentRunCompleted } from './posthog.js';
 import { log } from './logger.js';
@@ -60,7 +61,13 @@ function outputPayloadFor(result: RunAgentResult): unknown {
 
 export async function runRecordedAgent(params: RecordedAgentParams): Promise<RunAgentResult> {
   const { recording, runAgentImpl, ...runArgs } = params;
-  const runner = runAgentImpl ?? runAgent;
+  // Dry-run takes precedence over both injected impl and the real SDK so
+  // SDLC_DRY_RUN=1 always short-circuits, even if a caller passes its own
+  // runAgentImpl. Tests that want to override dry-run can unset the env.
+  const runner =
+    isDryRun() && !runAgentImpl
+      ? async (_params: RunAgentParams) => loadDryRunResult(recording.agent)
+      : (runAgentImpl ?? runAgent);
   const { ctx, agent, retryCount } = recording;
   const startedAt = new Date().toISOString();
   const startedAtMs = Date.now();

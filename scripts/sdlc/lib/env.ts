@@ -38,6 +38,14 @@ const Env = z.object({
   // proceeds normally. EU instance per the Frankfurt residency posture.
   POSTHOG_KEY: z.string().optional(),
   POSTHOG_HOST: z.string().optional(),
+
+  // Dry-run mode. When SDLC_DRY_RUN is "1" or "true" the orchestrator
+  // replays per-agent fixtures from scripts/sdlc/fixtures/ instead of
+  // calling the Anthropic API. All other side effects (Supabase, PostHog,
+  // PR ops) still run; they are best-effort and tolerate the missing
+  // upstream traffic. Useful for prompt iteration, failure-injection
+  // experiments, and demos that should not burn real tokens.
+  SDLC_DRY_RUN: z.string().optional(),
 });
 
 export type EnvVars = z.infer<typeof Env>;

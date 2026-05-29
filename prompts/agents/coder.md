@@ -102,3 +102,5 @@ These are the recurring bugs reviewers catch on auto-generated code. Self-check 
 ## When you are done
 
 Emit `02-summary.md` content as your final assistant message. The orchestrator extracts the first complete Markdown document from that final message, writes it to disk, and commits everything you produced to the build branch. Do not wrap the summary in triple backticks.
+
+Your final message must start with the `# Summary: <feature>` heading. No preamble. Phrases like "All checks clean. Let me now write the summary" or "Now I'll consolidate what I built" do not belong in the artifact; they leak into `02-summary.md` and get committed. Think silently, then emit only the document.

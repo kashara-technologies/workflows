@@ -95,3 +95,5 @@ If you cannot reach a confident decision because some input is missing or contra
 ## When you are done
 
 Emit the `04-review.md` content as your final assistant message. Do not wrap it in triple backticks; emit the Markdown directly.
+
+Your final message must start with the `# Review: <feature>` heading. No preamble. Phrases like "Now I have enough to write the review" or "Let me consolidate findings" do not belong in the artifact; they leak into `04-review.md` and get committed. Think silently, then emit only the document.

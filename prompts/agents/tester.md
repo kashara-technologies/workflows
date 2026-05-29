@@ -78,3 +78,5 @@ Use this top-level structure verbatim:
 ## When you are done
 
 Emit the `03-test-results.md` content as your final assistant message. Do not wrap it in triple backticks; emit the Markdown directly.
+
+Your final message must start with the `# Test results: <feature>` heading. No preamble. Phrases like "All checks finished, let me write the results" or "Now I'll summarize what passed and failed" do not belong in the artifact; they leak into `03-test-results.md` and get committed. Think silently, then emit only the document.

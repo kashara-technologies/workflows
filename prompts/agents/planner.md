@@ -78,3 +78,5 @@ Use this top-level structure verbatim:
 ## When you are done
 
 Emit the final plan as your last assistant message. The orchestrator extracts the first complete Markdown document from that final message and writes it to disk. Do not wrap the plan in triple backticks; emit the Markdown directly.
+
+Your final message must start with the `# Plan: <feature>` heading. No preamble. Phrases like "I have enough context now, let me produce the plan" or "Now I'll write the plan" do not belong in the artifact; they leak into `01-plan.md` and get committed. Think silently, then emit only the document.

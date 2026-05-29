@@ -53,15 +53,19 @@ jobs:
             echo "over_threshold=false" >> "$GITHUB_OUTPUT"
           fi
 
-  notify-over-threshold:
-    name: Post Slack warning when over 80% of the monthly cap
+  # Slack alert only when the cron job itself fails (Supabase unreachable,
+  # script crash, etc.). The "over budget" state is enforced silently by the
+  # orchestrator's monthly kill switch; a daily Slack alert reminding us
+  # of an already-known over-budget condition was noise.
+  notify-on-failure:
+    name: Post Slack alert when budget cron fails
     needs: budget-check
-    if: needs.budget-check.outputs.over_threshold == 'true'
+    if: failure()
     uses: kashara-technologies/workflows/.github/workflows/slack-alert.yml@main
     with:
-      job_name: Anthropic budget at or above 80%
+      job_name: Anthropic budget cron failed
       workflow_name: Anthropic budget cron
-      severity: warning
+      severity: critical
     secrets:
       SLACK_WEBHOOK_CRITICAL: ${{ secrets.SLACK_WEBHOOK_CRITICAL }}
       SLACK_WEBHOOK_WARNING: ${{ secrets.SLACK_WEBHOOK_WARNING }}

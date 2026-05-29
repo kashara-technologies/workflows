@@ -116,9 +116,11 @@ export async function runCoder(input: CoderInput): Promise<CoderOutput> {
     },
     maxTokens: 8192,
     // Coder needs many tool calls (multiple writes + shells per file). 80
-    // wasn't enough for the pulse categories run; bump to 120 for headroom
-    // on complex features, same pattern as the planner cap raise.
-    maxIterations: 120,
+    // wasn't enough for pulse categories; 120 wasn't enough for pulse teams
+    // (43 write_file calls, 38 read_file, 24 list_dir, 15 shell — legit work,
+    // not thrashing). Bump to 160; if we hit this again the answer is
+    // splitting the PRD or adding a coder convergence rule.
+    maxIterations: 160,
   });
 
   const summaryMarkdown = stripCodeFences(result.finalText.trim());

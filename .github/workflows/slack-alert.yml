@@ -65,6 +65,18 @@ jobs:
           WEBHOOK: ${{ steps.webhook.outputs.url }}
           LEVEL: ${{ steps.severity.outputs.level }}
         run: |
+          # Skip-and-log when the matching severity webhook secret is empty.
+          # Without this, the curl below exits 3 ("URL rejected: Malformed
+          # input to a URL function") and turns every calling workflow red,
+          # which means the actual signal (e.g. "cost regression detected")
+          # gets buried under a misleading "Slack post failed" status.
+          # Setting the SLACK_WEBHOOK_<LEVEL> secret enables real delivery.
+          if [[ -z "${WEBHOOK}" ]]; then
+            UPPER_LEVEL=$(echo "${LEVEL}" | tr '[:lower:]' '[:upper:]')
+            echo "::warning::SLACK_WEBHOOK_${UPPER_LEVEL} is empty; would have posted a ${LEVEL} alert from '${{ inputs.workflow_name }}' job '${{ inputs.job_name }}'. Set the secret to enable delivery."
+            exit 0
+          fi
+
           ICON_MAP_critical=":rotating_light:"
           ICON_MAP_warning=":warning:"
           ICON_MAP_info=":information_source:"

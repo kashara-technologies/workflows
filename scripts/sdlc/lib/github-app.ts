@@ -63,16 +63,22 @@ export async function assertCanWriteToRepo(targetRepo: string): Promise<void> {
   });
 
   const repoName = targetRepo.split('/')[1] ?? targetRepo;
-  if (
-    info.repositorySelection === 'selected' &&
-    info.repositoryNames.length > 0 &&
-    !info.repositoryNames.includes(repoName)
-  ) {
-    throw new Error(
-      `kashara-orchestrator App is installed with repository_selection=selected, ` +
-        `and ${repoName} is NOT in the selected list. Selected: ${info.repositoryNames.join(', ')}. ` +
-        `Fix: open the App installation settings and add ${repoName}.`,
-    );
+  if (info.repositorySelection === 'selected') {
+    if (info.repositoryNames.length === 0) {
+      throw new Error(
+        `kashara-orchestrator App installation (${process.env.ORCHESTRATOR_APP_INSTALLATION_ID}) ` +
+          `has repository_selection=selected but ZERO selected repositories. ` +
+          `Fix: open the App installation settings page and either pick "All repositories" ` +
+          `or add ${repoName} (plus the other product repos) under "Only select repositories".`,
+      );
+    }
+    if (!info.repositoryNames.includes(repoName)) {
+      throw new Error(
+        `kashara-orchestrator App is installed with repository_selection=selected, ` +
+          `and ${repoName} is NOT in the selected list. Selected: ${info.repositoryNames.join(', ')}. ` +
+          `Fix: open the App installation settings and add ${repoName}.`,
+      );
+    }
   }
 
   const contents = info.permissions.contents;
